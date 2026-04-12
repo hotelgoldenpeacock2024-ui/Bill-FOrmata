@@ -1,5 +1,5 @@
 import serverless from "serverless-http";
-import { app } from "../../server";
+import { app } from "../../app.ts";
 
 export const handler = async (event: any, context: any) => {
   console.log("Netlify Function Request:", event.path);
