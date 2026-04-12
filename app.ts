@@ -29,6 +29,35 @@ function getSupabase() {
 export const app = express();
 app.use(express.json());
 
+const OperationType = {
+  CREATE: 'create',
+  UPDATE: 'update',
+  DELETE: 'delete',
+  LIST: 'list',
+  GET: 'get',
+  WRITE: 'write',
+} as const;
+
+type OperationType = typeof OperationType[keyof typeof OperationType];
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: any;
+}
+
+function handleFirestoreError(error: any, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error.message || String(error),
+    authInfo: null, // No Firebase Auth in this Supabase setup
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  return errInfo;
+}
+
 const apiRouter = express.Router();
 
 // This will be overridden by the local server to support WebSockets
@@ -60,8 +89,8 @@ apiRouter.get("/rooms", async (req, res) => {
     if (error) throw error;
     res.json(data || []);
   } catch (error: any) {
-    console.error("Error fetching rooms:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch rooms" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, "rooms");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -79,8 +108,8 @@ apiRouter.get("/settings", async (req, res) => {
     }, {});
     res.json(settingsObj);
   } catch (error: any) {
-    console.error("Error fetching settings:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch settings" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, "settings");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -100,7 +129,8 @@ apiRouter.post("/settings", async (req, res) => {
     broadcast({ type: 'SETTINGS_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to update settings" });
+    const errInfo = handleFirestoreError(error, OperationType.WRITE, "settings");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -121,8 +151,8 @@ apiRouter.post("/rooms", async (req, res) => {
     if (error) throw error;
     res.json({ success: true, id: data[0].id });
   } catch (error: any) {
-    console.error("Error adding room:", error);
-    res.status(500).json({ error: error.message || "Failed to add room. Room number might already exist." });
+    const errInfo = handleFirestoreError(error, OperationType.CREATE, "rooms");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -144,7 +174,8 @@ apiRouter.patch("/rooms/:id", async (req, res) => {
     if (error) throw error;
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to update room" });
+    const errInfo = handleFirestoreError(error, OperationType.UPDATE, `rooms/${id}`);
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -293,8 +324,8 @@ apiRouter.get("/availability", async (req, res) => {
       rooms: filteredRooms 
     });
   } catch (error: any) {
-    console.error("Error checking availability:", error);
-    res.status(500).json({ error: error.message || "Failed to check availability" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, "availability");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -325,8 +356,8 @@ apiRouter.get("/bookings", async (req, res) => {
 
     res.json(transformed);
   } catch (error: any) {
-    console.error("Error fetching bookings:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch bookings" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, "bookings");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -360,8 +391,8 @@ apiRouter.get("/guests", async (req, res) => {
     const guests = Array.from(guestMap.values()).sort((a, b) => b.last_stay.localeCompare(a.last_stay));
     res.json(guests);
   } catch (error: any) {
-    console.error("Error fetching guests:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch guests" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, "bookings/guests");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -393,8 +424,8 @@ apiRouter.get("/guests/:name/bookings", async (req, res) => {
 
     res.json(transformed);
   } catch (error: any) {
-    console.error("Error fetching guest bookings:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch guest bookings" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, `bookings/guest/${name}`);
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -448,8 +479,8 @@ apiRouter.post("/bookings", async (req, res) => {
     broadcast({ type: 'BOOKING_UPDATED' });
     res.json({ success: true, booking_id });
   } catch (error: any) {
-    console.error(error);
-    res.status(500).json({ error: error.message || "Failed to create bookings" });
+    const errInfo = handleFirestoreError(error, OperationType.CREATE, "bookings");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -470,8 +501,8 @@ apiRouter.patch("/bookings/:id/cancel", async (req, res) => {
     broadcast({ type: 'BOOKING_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
-    console.error(`Error cancelling booking ${id}:`, error);
-    res.status(500).json({ error: error.message || "Failed to cancel booking" });
+    const errInfo = handleFirestoreError(error, OperationType.UPDATE, `bookings/${id}`);
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -512,7 +543,8 @@ apiRouter.patch("/bookings/group/:bookingId", async (req, res) => {
     broadcast({ type: 'BOOKING_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || "Failed to update booking group" });
+    const errInfo = handleFirestoreError(error, OperationType.UPDATE, `bookings/group/${bookingId}`);
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -547,8 +579,8 @@ apiRouter.post("/bookings/retrieve", async (req, res) => {
     broadcast({ type: 'BOOKING_UPDATED' });
     res.json({ success: true, count: count || (data ? data.length : 0) });
   } catch (error: any) {
-    console.error("Error retrieving bookings:", error);
-    res.status(500).json({ error: error.message || "Failed to retrieve bookings" });
+    const errInfo = handleFirestoreError(error, OperationType.UPDATE, "bookings/retrieve");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -560,8 +592,8 @@ apiRouter.get("/bills", async (req, res) => {
     if (error) throw error;
     res.json(data || []);
   } catch (error: any) {
-    console.error("Error fetching bills:", error);
-    res.status(500).json({ error: error.message || "Failed to fetch bills" });
+    const errInfo = handleFirestoreError(error, OperationType.LIST, "bills");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -581,8 +613,8 @@ apiRouter.post("/bills", async (req, res) => {
     broadcast({ type: 'BOOKING_UPDATED' });
     res.json({ success: true, data: data[0] });
   } catch (error: any) {
-    console.error("Error saving bill:", error);
-    res.status(500).json({ error: error.message || "Failed to save bill" });
+    const errInfo = handleFirestoreError(error, OperationType.CREATE, "bills");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -595,8 +627,8 @@ apiRouter.delete("/bills/:id", async (req, res) => {
     broadcast({ type: 'BILLS_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
-    console.error("Error deleting bill:", error);
-    res.status(500).json({ error: error.message || "Failed to delete bill" });
+    const errInfo = handleFirestoreError(error, OperationType.DELETE, `bills/${id}`);
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 
@@ -608,8 +640,8 @@ apiRouter.delete("/bills", async (req, res) => {
     broadcast({ type: 'BILLS_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
-    console.error("Error clearing bills:", error);
-    res.status(500).json({ error: error.message || "Failed to clear bills" });
+    const errInfo = handleFirestoreError(error, OperationType.DELETE, "bills");
+    res.status(500).json({ error: JSON.stringify(errInfo) });
   }
 });
 

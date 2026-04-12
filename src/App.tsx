@@ -32,7 +32,8 @@ import {
   X,
   ShieldCheck,
   ExternalLink,
-  Sparkles
+  Sparkles,
+  RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -170,7 +171,7 @@ export default function App() {
   const [activeView, setActiveView] = useState<'availability' | 'bookings' | 'profiles' | 'settings' | 'inventory' | 'billing' | 'all_bills'>('availability');
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [allBills, setAllBills] = useState<Bill[]>([]);
-  const [guests, setGuests] = useState<{ guest_name: string; booking_count: number; last_stay: string }[]>([]);
+  const [guests, setGuests] = useState<{ guest_name: string; booking_count: number; last_stay: string; guest_phone: string; guest_email: string }[]>([]);
   const [selectedGuest, setSelectedGuest] = useState<string | null>(null);
   const [guestBookings, setGuestBookings] = useState<Booking[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
@@ -485,9 +486,13 @@ export default function App() {
     try {
       const res = await fetch('/api/bills');
       const data = await res.json();
+      if (data.error) {
+        console.error("Server error fetching bills:", data.error);
+        return;
+      }
       setAllBills(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error("Error fetching bills:", error);
+      console.error("Network or parsing error fetching bills:", error);
     }
   };
 
@@ -652,11 +657,17 @@ export default function App() {
       const data = await res.json();
       if (data.error) {
         setDbError(data.error);
+        if (data.error.startsWith('{')) {
+          throw new Error(data.error);
+        }
         return;
       }
       setAllBookings(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Error fetching bookings:", error);
+      if (error instanceof Error && error.message.startsWith('{')) {
+        throw error;
+      }
     }
   };
 
@@ -693,6 +704,13 @@ export default function App() {
         })
       });
       const data = await res.json();
+      if (data.error) {
+        if (data.error.startsWith('{')) {
+          throw new Error(data.error);
+        }
+        alert(data.error);
+        return;
+      }
       if (data.success) {
         const bookedRooms = rooms.filter(r => selectedRoomIds.includes(r.id));
         setLastBookedRooms(bookedRooms);
@@ -3282,7 +3300,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                   disabled={isRetrieving}
                   className="h-12 px-6 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition-all flex items-center gap-2 disabled:opacity-50"
                 >
-                  <History size={18} />
+                  <RefreshCw size={18} className={isRetrieving ? 'animate-spin' : ''} />
                   {isRetrieving ? 'Retrieving...' : 'Retrieve Deleted'}
                 </button>
 
