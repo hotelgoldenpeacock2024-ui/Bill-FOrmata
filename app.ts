@@ -589,7 +589,12 @@ apiRouter.get("/bills", async (req, res) => {
   try {
     const supabase = getSupabase();
     const { data, error } = await supabase.from("bills").select("*").order("created_at", { ascending: false });
-    if (error) throw error;
+    if (error) {
+      if (error.message.includes("Could not find the table")) {
+        return res.json([]); // Return empty array if table doesn't exist yet
+      }
+      throw error;
+    }
     res.json(data || []);
   } catch (error: any) {
     const errInfo = handleFirestoreError(error, OperationType.LIST, "bills");
@@ -602,7 +607,12 @@ apiRouter.post("/bills", async (req, res) => {
   try {
     const supabase = getSupabase();
     const { data, error } = await supabase.from("bills").insert([billData]).select();
-    if (error) throw error;
+    if (error) {
+      if (error.message.includes("Could not find the table")) {
+        throw new Error("The 'bills' table does not exist in your Supabase database. Please run the SQL script in 'supabase_schema.sql' in your Supabase SQL Editor to create it.");
+      }
+      throw error;
+    }
     
     // Also mark the booking as billed if booking_id is provided
     if (billData.booking_id) {
@@ -623,7 +633,12 @@ apiRouter.delete("/bills/:id", async (req, res) => {
   try {
     const supabase = getSupabase();
     const { error } = await supabase.from("bills").delete().eq("id", id);
-    if (error) throw error;
+    if (error) {
+      if (error.message.includes("Could not find the table")) {
+        return res.json({ success: true }); // Ignore if table doesn't exist
+      }
+      throw error;
+    }
     broadcast({ type: 'BILLS_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
@@ -636,7 +651,12 @@ apiRouter.delete("/bills", async (req, res) => {
   try {
     const supabase = getSupabase();
     const { error } = await supabase.from("bills").delete().neq("id", 0); // Delete all
-    if (error) throw error;
+    if (error) {
+      if (error.message.includes("Could not find the table")) {
+        return res.json({ success: true }); // Ignore if table doesn't exist
+      }
+      throw error;
+    }
     broadcast({ type: 'BILLS_UPDATED' });
     res.json({ success: true });
   } catch (error: any) {
