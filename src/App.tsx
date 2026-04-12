@@ -188,7 +188,19 @@ export default function App() {
         console.error("Error checking GST status", error);
       }
     };
+    const checkHealth = async () => {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        setIsNetlify(!!data.isNetlify);
+        setIsConnected(data.status === 'ok');
+      } catch (error) {
+        console.error("Error checking health", error);
+        setIsConnected(false);
+      }
+    };
     checkGstStatus();
+    checkHealth();
   }, []);
 
   const fetchGSTDetails = async (gstin: string, target: 'booking' | 'manual' = 'manual') => {
@@ -344,6 +356,8 @@ export default function App() {
   const [dailyBookingsDate, setDailyBookingsDate] = useState(new Date().toISOString().split('T')[0]);
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [isLive, setIsLive] = useState(false);
+  const [isNetlify, setIsNetlify] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
   
   // Settings State
   const [hotelSettings, setHotelSettings] = useState({
@@ -454,6 +468,19 @@ export default function App() {
     setWs(socket);
     return () => socket.close();
   }, [performCheckAvailability]);
+
+  // Polling for Netlify (since WebSockets aren't supported)
+  useEffect(() => {
+    if (isNetlify && !isLive) {
+      const interval = setInterval(() => {
+        fetchBookings();
+        fetchGuests();
+        fetchRooms();
+        fetchSettings();
+      }, 30000); // Poll every 30 seconds
+      return () => clearInterval(interval);
+    }
+  }, [isNetlify, isLive]);
 
   // Auto-check availability on input change
   useEffect(() => {
@@ -1709,9 +1736,9 @@ Thank you for choosing ${hotelSettings.hotel_name}!
             <div>
               <h1 className="text-xl font-semibold tracking-tight">{hotelSettings.hotel_name}</h1>
               <div className="flex items-center gap-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-primary animate-pulse' : 'bg-rose-500'}`} />
+                <div className={`w-1.5 h-1.5 rounded-full ${isLive ? 'bg-primary animate-pulse' : (isConnected ? 'bg-blue-500' : 'bg-rose-500')}`} />
                 <span className="text-[9px] font-bold uppercase tracking-widest text-black/30">
-                  {isLive ? 'Live' : 'Offline'}
+                  {isLive ? 'Live' : (isConnected ? (isNetlify ? 'Cloud Sync' : 'Connected') : 'Offline')}
                 </span>
               </div>
             </div>
