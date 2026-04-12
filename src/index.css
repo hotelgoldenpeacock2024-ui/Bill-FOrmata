@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-light: var(--primary-light);
+  --color-primary-text: var(--primary-text);
+  --shadow-primary: 0 10px 15px -3px var(--primary-light), 0 4px 6px -4px var(--primary-light);
+}
+
+:root {
+  --primary: #059669; /* emerald-600 */
+  --primary-hover: #047857; /* emerald-700 */
+  --primary-light: #ecfdf5; /* emerald-50 */
+  --primary-text: #065f46; /* emerald-800 */
+}
+
+[data-theme='emerald'] {
+  --primary: #059669;
+  --primary-hover: #047857;
+  --primary-light: #ecfdf5;
+  --primary-text: #065f46;
+}
+
+[data-theme='indigo'] {
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-light: #eef2ff;
+  --primary-text: #3730a3;
+}
+
+[data-theme='rose'] {
+  --primary: #e11d48;
+  --primary-hover: #be123c;
+  --primary-light: #fff1f2;
+  --primary-text: #9f1239;
+}
+
+[data-theme='amber'] {
+  --primary: #d97706;
+  --primary-hover: #b45309;
+  --primary-light: #fffbeb;
+  --primary-text: #92400e;
+}
+
+[data-theme='slate'] {
+  --primary: #475569;
+  --primary-hover: #334155;
+  --primary-light: #f8fafc;
+  --primary-text: #1e293b;
+}
+
+@layer base {
+  body {
+    @apply antialiased;
+  }
+}
