@@ -552,6 +552,67 @@ apiRouter.post("/bookings/retrieve", async (req, res) => {
   }
 });
 
+// Bills Routes
+apiRouter.get("/bills", async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase.from("bills").select("*").order("created_at", { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (error: any) {
+    console.error("Error fetching bills:", error);
+    res.status(500).json({ error: error.message || "Failed to fetch bills" });
+  }
+});
+
+apiRouter.post("/bills", async (req, res) => {
+  const billData = req.body;
+  try {
+    const supabase = getSupabase();
+    const { data, error } = await supabase.from("bills").insert([billData]).select();
+    if (error) throw error;
+    
+    // Also mark the booking as billed if booking_id is provided
+    if (billData.booking_id) {
+      await supabase.from("bookings").update({ is_billed: true }).eq("booking_id", billData.booking_id);
+    }
+
+    broadcast({ type: 'BILLS_UPDATED' });
+    broadcast({ type: 'BOOKING_UPDATED' });
+    res.json({ success: true, data: data[0] });
+  } catch (error: any) {
+    console.error("Error saving bill:", error);
+    res.status(500).json({ error: error.message || "Failed to save bill" });
+  }
+});
+
+apiRouter.delete("/bills/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase.from("bills").delete().eq("id", id);
+    if (error) throw error;
+    broadcast({ type: 'BILLS_UPDATED' });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Error deleting bill:", error);
+    res.status(500).json({ error: error.message || "Failed to delete bill" });
+  }
+});
+
+apiRouter.delete("/bills", async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const { error } = await supabase.from("bills").delete().neq("id", 0); // Delete all
+    if (error) throw error;
+    broadcast({ type: 'BILLS_UPDATED' });
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Error clearing bills:", error);
+    res.status(500).json({ error: error.message || "Failed to clear bills" });
+  }
+});
+
 // Mount the router at both root and /api for maximum compatibility
 app.use("/api", apiRouter);
 app.use("/", apiRouter);

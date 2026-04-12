@@ -103,6 +103,27 @@ interface Booking {
   advance_payment: number;
   guest_gst?: string;
   guest_address?: string;
+  is_billed?: boolean;
+}
+
+interface Bill {
+  id: number;
+  invoice_id: string;
+  booking_id?: string;
+  guest_name: string;
+  guest_phone: string;
+  guest_email: string;
+  guest_address: string;
+  guest_gst: string;
+  check_in: string;
+  check_out: string;
+  rooms_data: string; // JSON string of rooms
+  base_price: number;
+  gst_amount: number;
+  dsda_charge: number;
+  total_amount: number;
+  bill_type: 'GST' | 'Normal';
+  created_at: string;
 }
 
 interface AvailabilityResult {
@@ -148,6 +169,7 @@ export default function App() {
   } | null>(null);
   const [activeView, setActiveView] = useState<'availability' | 'bookings' | 'profiles' | 'settings' | 'inventory' | 'billing' | 'all_bills'>('availability');
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
+  const [allBills, setAllBills] = useState<Bill[]>([]);
   const [guests, setGuests] = useState<{ guest_name: string; booking_count: number; last_stay: string }[]>([]);
   const [selectedGuest, setSelectedGuest] = useState<string | null>(null);
   const [guestBookings, setGuestBookings] = useState<Booking[]>([]);
@@ -459,9 +481,76 @@ export default function App() {
     }
   };
 
+  const fetchBills = async () => {
+    try {
+      const res = await fetch('/api/bills');
+      const data = await res.json();
+      setAllBills(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error("Error fetching bills:", error);
+    }
+  };
+
+  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[]) => {
+    try {
+      const billData = {
+        invoice_id: getInvoiceId(booking),
+        booking_id: booking.booking_id,
+        guest_name: booking.guest_name,
+        guest_phone: booking.guest_phone,
+        guest_email: booking.guest_email,
+        guest_address: (booking as any).guest_address || '',
+        guest_gst: (booking as any).guest_gst || '',
+        check_in: booking.check_in,
+        check_out: booking.check_out,
+        rooms_data: JSON.stringify(groupBookings.map(b => ({
+          room_number: b.room_number,
+          room_type: b.room_type,
+          room_price: b.room_price
+        }))),
+        base_price: basePrice,
+        gst_amount: gstAmount,
+        dsda_charge: dsdaCharge,
+        total_amount: totalAmount,
+        bill_type: billType
+      };
+
+      await fetch('/api/bills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(billData)
+      });
+      fetchBills();
+      fetchBookings();
+    } catch (error) {
+      console.error("Error saving bill to DB:", error);
+    }
+  };
+
+  const deleteBill = async (id: number) => {
+    if (!confirm("Are you sure you want to delete this bill?")) return;
+    try {
+      await fetch(`/api/bills/${id}`, { method: 'DELETE' });
+      fetchBills();
+    } catch (error) {
+      console.error("Error deleting bill:", error);
+    }
+  };
+
+  const clearAllBills = async () => {
+    if (!confirm("Are you sure you want to clear all bill history? This cannot be undone.")) return;
+    try {
+      await fetch('/api/bills', { method: 'DELETE' });
+      fetchBills();
+    } catch (error) {
+      console.error("Error clearing bills:", error);
+    }
+  };
+
   useEffect(() => {
     fetchRooms();
     fetchBookings();
+    fetchBills();
     fetchGuests();
     fetchSettings();
 
@@ -478,6 +567,8 @@ export default function App() {
         fetchBookings();
         fetchGuests();
         performCheckAvailability();
+      } else if (data.type === 'BILLS_UPDATED') {
+        fetchBills();
       } else if (data.type === 'ROOMS_UPDATED') {
         fetchRooms();
         performCheckAvailability();
@@ -1045,6 +1136,9 @@ export default function App() {
     const total = Math.round(subtotal + dsdaCharge);
     const balance = Math.round(total - advancePayment);
 
+    // Save to DB
+    await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings);
+
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
 
     for (let i = 0; i < copyLabels.length; i++) {
@@ -1208,7 +1302,7 @@ export default function App() {
     const [year, month] = monthStr.split('-');
     const monthName = new Date(parseInt(year), parseInt(month) - 1).toLocaleString('default', { month: 'long' });
     
-    const filteredBookings = allBookings.filter(b => b.check_in.startsWith(monthStr));
+    const filteredBills = allBills.filter(b => b.check_in.startsWith(monthStr));
     
     const doc = new jsPDF();
     const themeColors: Record<string, string> = {
@@ -1237,23 +1331,18 @@ export default function App() {
     doc.text(`MONTHLY BILLING REPORT - ${monthName.toUpperCase()} ${year}`, 105, 45, { align: 'center' });
 
     // Table
-    const tableRows = filteredBookings.map(b => {
-      const nights = calculateNights(b.check_in, b.check_out);
-      const total = (b.room_price * nights) + (b.dsda_charge || 0);
+    const tableRows = filteredBills.map(b => {
       return [
-        getInvoiceId(b),
+        b.invoice_id,
         formatDateDDMMYYYY(b.check_in),
         b.guest_name,
-        `#${b.room_number}`,
-        nights.toString(),
-        `Rs. ${total}`
+        'Multiple/Manual',
+        'N/A',
+        `Rs. ${b.total_amount}`
       ];
     });
 
-    const totalRevenue = filteredBookings.reduce((acc, b) => {
-      const nights = calculateNights(b.check_in, b.check_out);
-      return acc + (b.room_price * nights) + (b.dsda_charge || 0);
-    }, 0);
+    const totalRevenue = filteredBills.reduce((acc, b) => acc + b.total_amount, 0);
 
     autoTable(doc, {
       startY: 55,
@@ -1281,62 +1370,25 @@ export default function App() {
   };
 
   const generateMonthlyExcelReport = (monthStr: string) => {
-    const [year, month] = monthStr.split('-');
-    const monthName = new Date(parseInt(year), parseInt(month) - 1).toLocaleString('default', { month: 'long' });
+    const filteredBills = allBills.filter(b => b.check_in.startsWith(monthStr));
     
-    const daysInMonth = new Date(parseInt(year), parseInt(month), 0).getDate();
-    const data: any[][] = [[monthName.toUpperCase()]];
-    data.push([]); // Empty row
+    const reportData = filteredBills.map(b => ({
+      'Invoice ID': b.invoice_id,
+      'Date': formatDateDDMMYYYY(b.check_in),
+      'Guest Name': b.guest_name,
+      'Phone': b.guest_phone,
+      'GSTIN': b.guest_gst || 'N/A',
+      'Base Price': b.base_price,
+      'GST Amount': b.gst_amount,
+      'Additional Charge': b.dsda_charge,
+      'Total Amount': b.total_amount,
+      'Bill Type': b.bill_type
+    }));
 
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${year}-${month}-${String(d).padStart(2, '0')}`;
-      const displayDate = `${d}-${monthName.slice(0, 3)}-${year.slice(-2)}`;
-      
-      data.push(['DATE', displayDate]);
-      data.push(['ROOM NO', 'RATE', 'CGST', 'SGST', 'TOTAL']);
-      
-      let dayTotalRate = 0;
-      let dayTotalCgst = 0;
-      let dayTotalSgst = 0;
-      let dayTotalAmount = 0;
-
-      // Sort rooms by number
-      const sortedRooms = [...rooms].sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, {numeric: true}));
-
-      sortedRooms.forEach(room => {
-        const booking = allBookings.find(b => b.room_number === room.room_number && b.check_in === dateStr && b.status === 'confirmed');
-        
-        if (booking) {
-          const nights = calculateNights(booking.check_in, booking.check_out);
-          const basePrice = booking.room_price;
-          
-          let gstRate = 0;
-          if (basePrice >= 7500) gstRate = 0.18;
-          else if (basePrice >= 1000) gstRate = 0.05;
-          
-          const cgst = (basePrice * (gstRate / 2));
-          const sgst = (basePrice * (gstRate / 2));
-          const total = basePrice + cgst + sgst;
-          
-          data.push([room.room_number, basePrice, cgst, sgst, total]);
-          
-          dayTotalRate += basePrice;
-          dayTotalCgst += cgst;
-          dayTotalSgst += sgst;
-          dayTotalAmount += total;
-        } else {
-          data.push([room.room_number, 0, 0, 0, 0]);
-        }
-      });
-      
-      data.push(['TOTAL', dayTotalRate, dayTotalCgst, dayTotalSgst, dayTotalAmount]);
-      data.push([]); // Spacer
-    }
-
-    const ws = XLSX.utils.aoa_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Report");
-    XLSX.writeFile(wb, `Monthly_Report_${monthStr}.xlsx`);
+    const worksheet = XLSX.utils.json_to_sheet(reportData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Monthly Report');
+    XLSX.writeFile(workbook, `Monthly_Report_${monthStr}.xlsx`);
   };
 
   const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[]) => {
@@ -1392,6 +1444,9 @@ export default function App() {
     const totalWithTax = subtotal + cgstAmount + sgstAmount + igstAmount;
     const grandTotal = Math.round(totalWithTax);
     const roundOff = grandTotal - totalWithTax;
+
+    // Save to DB
+    await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings);
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
 
@@ -2586,6 +2641,14 @@ Thank you for choosing ${hotelSettings.hotel_name}!
               </div>
               
               <div className="flex flex-wrap items-center gap-4">
+                <button 
+                  onClick={retrieveDeletedBookings}
+                  disabled={isRetrieving}
+                  className="h-12 px-6 bg-emerald-50 text-emerald-600 rounded-xl font-bold hover:bg-emerald-100 transition-all flex items-center gap-2 disabled:opacity-50"
+                >
+                  <RefreshCw size={18} className={isRetrieving ? 'animate-spin' : ''} />
+                  {isRetrieving ? 'Retrieving...' : 'Retrieve Deleted'}
+                </button>
                 <div className="flex items-center gap-2 bg-white p-1 rounded-xl border border-black/5 shadow-sm">
                   <div className="px-3">
                     <p className="text-[10px] font-bold uppercase tracking-widest text-black/40">From</p>
@@ -3101,14 +3164,18 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                       <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Guest</th>
                       <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Room</th>
                       <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Stay Dates</th>
+                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Base Price</th>
+                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">GST</th>
                       <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-black/5">
                     {allBookings
                       .filter(b => 
-                        b.guest_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                        b.room_number.toLowerCase().includes(searchQuery.toLowerCase())
+                        !b.is_billed && b.status === 'confirmed' && (
+                          b.guest_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          b.room_number.toLowerCase().includes(searchQuery.toLowerCase())
+                        )
                       )
                       .sort((a, b) => new Date(b.check_in).getTime() - new Date(a.check_in).getTime())
                       .map(booking => {
@@ -3126,6 +3193,12 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                             <td className="px-8 py-4">
                               <p className="text-sm font-medium">{formatDateDDMMYYYY(booking.check_in)} - {formatDateDDMMYYYY(booking.check_out)}</p>
                               <p className="text-[10px] text-black/40">{nights} days</p>
+                            </td>
+                            <td className="px-8 py-4">
+                              <p className="text-sm font-medium">Rs. {booking.room_price * nights}</p>
+                            </td>
+                            <td className="px-8 py-4">
+                              <p className="text-sm font-medium">Rs. {((booking.room_price * nights) * (booking.room_price >= 7500 ? 0.18 : booking.room_price >= 1000 ? 0.05 : 0)).toFixed(2)}</p>
                             </td>
                             <td className="px-8 py-4">
                               <div className="flex items-center justify-end gap-6">
@@ -3214,7 +3287,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                 </button>
 
                 <button 
-                  onClick={clearAllBookings}
+                  onClick={clearAllBills}
                   className="h-12 px-6 bg-rose-50 text-rose-600 rounded-xl font-bold hover:bg-rose-100 transition-all flex items-center gap-2"
                 >
                   <Trash2 size={18} />
@@ -3247,55 +3320,39 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-black/5">
-                    {allBookings
+                    {allBills
                       .filter(b => {
                         const matchesSearch = b.guest_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          b.room_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          getInvoiceId(b).toLowerCase().includes(searchQuery.toLowerCase());
+                          b.invoice_id.toLowerCase().includes(searchQuery.toLowerCase());
                         
                         const matchesMonth = b.check_in.startsWith(selectedBillMonth);
                         
                         return matchesSearch && matchesMonth;
                       })
-                      .sort((a, b) => new Date(b.check_in).getTime() - new Date(a.check_in).getTime())
-                      .map(booking => {
-                        const nights = calculateNights(booking.check_in, booking.check_out);
-                        const invoiceId = getInvoiceId(booking);
+                      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                      .map(bill => {
+                        const rooms = JSON.parse(bill.rooms_data || '[]');
                         return (
-                          <tr key={booking.id} className="hover:bg-black/[0.01]">
+                          <tr key={bill.id} className="hover:bg-black/[0.01]">
                             <td className="px-8 py-4">
-                              <p className="font-mono text-xs font-bold text-primary">{invoiceId}</p>
+                              <p className="font-mono text-xs font-bold text-primary">{bill.invoice_id}</p>
                             </td>
                             <td className="px-8 py-4">
-                              <p className="font-bold text-sm">{booking.guest_name}</p>
-                              <p className="text-[10px] text-black/40">{booking.guest_phone}</p>
+                              <p className="font-bold text-sm">{bill.guest_name}</p>
+                              <p className="text-[10px] text-black/40">{bill.guest_phone}</p>
                             </td>
                             <td className="px-8 py-4">
-                              <p className="font-bold text-sm">#{booking.room_number}</p>
-                              <p className="text-[10px] text-black/40">{booking.room_type}</p>
+                              <p className="font-bold text-sm">{rooms.map((r: any) => `#${r.room_number}`).join(', ')}</p>
+                              <p className="text-[10px] text-black/40">{bill.bill_type} Bill</p>
                             </td>
                             <td className="px-8 py-4">
-                              <p className="text-sm font-medium">{formatDateDDMMYYYY(booking.check_in)} - {formatDateDDMMYYYY(booking.check_out)}</p>
-                              <p className="text-[10px] text-black/40">{nights} days</p>
+                              <p className="text-sm font-medium">{formatDateDDMMYYYY(bill.check_in)} - {formatDateDDMMYYYY(bill.check_out)}</p>
+                              <p className="text-[10px] text-black/40">Total: Rs. {bill.total_amount}</p>
                             </td>
                             <td className="px-8 py-4">
                               <div className="flex items-center justify-end gap-3">
                                 <button 
-                                  onClick={() => downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true)}
-                                  className="p-2 hover:bg-black/5 rounded-lg text-black/40 hover:text-primary transition-all"
-                                  title="Normal Bill"
-                                >
-                                  <Printer size={16} />
-                                </button>
-                                <button 
-                                  onClick={() => generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true)}
-                                  className="p-2 hover:bg-primary-light rounded-lg text-primary transition-all"
-                                  title="GST Bill"
-                                >
-                                  <FileText size={16} />
-                                </button>
-                                <button 
-                                  onClick={() => deleteBooking(booking.id)}
+                                  onClick={() => deleteBill(bill.id)}
                                   className="p-2 hover:bg-rose-50 rounded-lg text-rose-400 hover:text-rose-600 transition-all"
                                   title="Delete Bill"
                                 >
