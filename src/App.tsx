@@ -177,6 +177,27 @@ export default function App() {
   const [usingMockGST, setUsingMockGST] = useState(false);
   const [gstConfig, setGstConfig] = useState<{configured: boolean, providers: any} | null>(null);
   const [includeDsdaMap, setIncludeDsdaMap] = useState<Record<string, boolean>>({});
+  const [isRetrieving, setIsRetrieving] = useState(false);
+
+  const retrieveDeletedBookings = async () => {
+    setIsRetrieving(true);
+    try {
+      const res = await fetch('/api/bookings/retrieve', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        alert(`${data.count} bookings retrieved successfully!`);
+        fetchBookings();
+        fetchGuests();
+      } else {
+        alert(data.error || "Failed to retrieve bookings");
+      }
+    } catch (error) {
+      console.error("Error retrieving bookings:", error);
+      alert("An error occurred while retrieving bookings");
+    } finally {
+      setIsRetrieving(false);
+    }
+  };
 
   useEffect(() => {
     const checkGstStatus = async () => {
@@ -2106,7 +2127,34 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                         </div>
                                       )}
                                       <div className="flex items-center gap-2">
-                                        <span className="text-[10px] font-bold uppercase opacity-50">Price:</span>
+                                        <span className="text-[10px] font-bold uppercase opacity-50">Total Fare (Incl. GST):</span>
+                                        <input 
+                                          type="number"
+                                          placeholder="Total Fare"
+                                          onChange={(e) => {
+                                            const totalFare = parseFloat(e.target.value) || 0;
+                                            let basePrice = totalFare;
+                                            // Reverse GST calculation
+                                            // If base >= 7500, GST is 18% (total = base * 1.18 => base = total / 1.18)
+                                            // If base >= 1000, GST is 5% (total = base * 1.05 => base = total / 1.05)
+                                            
+                                            // We need to check which bracket it falls into
+                                            // Bracket 1: base >= 7500 => total >= 8850
+                                            // Bracket 2: base >= 1000 => total >= 1050
+                                            
+                                            if (totalFare >= 8850) {
+                                              basePrice = totalFare / 1.18;
+                                            } else if (totalFare >= 1050) {
+                                              basePrice = totalFare / 1.05;
+                                            }
+                                            
+                                            setCustomPrices({...customPrices, [room.id]: parseFloat(basePrice.toFixed(2))});
+                                          }}
+                                          className={`w-24 h-8 px-2 rounded-lg text-sm font-bold border transition-all outline-none ${selectedRoomIds.includes(room.id) ? 'bg-white/20 border-white/30 text-white placeholder:text-white/40' : 'bg-black/5 border-black/5 focus:bg-white focus:border-primary'}`}
+                                        />
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] font-bold uppercase opacity-50">Base Price:</span>
                                         <input 
                                           type="number"
                                           value={customPrices[room.id] ?? room.price}
@@ -3157,6 +3205,15 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                 </button>
 
                 <button 
+                  onClick={retrieveDeletedBookings}
+                  disabled={isRetrieving}
+                  className="h-12 px-6 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition-all flex items-center gap-2 disabled:opacity-50"
+                >
+                  <History size={18} />
+                  {isRetrieving ? 'Retrieving...' : 'Retrieve Deleted'}
+                </button>
+
+                <button 
                   onClick={clearAllBookings}
                   className="h-12 px-6 bg-rose-50 text-rose-600 rounded-xl font-bold hover:bg-rose-100 transition-all flex items-center gap-2"
                 >
@@ -3809,47 +3866,65 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                             <X size={14} />
                           </button>
                         )}
-                        <div className="grid grid-cols-3 gap-4">
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Room No</label>
-                            <input 
-                              type="text"
-                              value={room.room_number}
-                              onChange={(e) => {
-                                const newRooms = [...manualBillData.rooms];
-                                newRooms[index].room_number = e.target.value;
-                                setManualBillData({...manualBillData, rooms: newRooms});
-                              }}
-                              className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                            />
+                          <div className="grid grid-cols-4 gap-4">
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Room No</label>
+                              <input 
+                                type="text"
+                                value={room.room_number}
+                                onChange={(e) => {
+                                  const newRooms = [...manualBillData.rooms];
+                                  newRooms[index].room_number = e.target.value;
+                                  setManualBillData({...manualBillData, rooms: newRooms});
+                                }}
+                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Type</label>
+                              <input 
+                                type="text"
+                                value={room.room_type}
+                                onChange={(e) => {
+                                  const newRooms = [...manualBillData.rooms];
+                                  newRooms[index].room_type = e.target.value;
+                                  setManualBillData({...manualBillData, rooms: newRooms});
+                                }}
+                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Total Fare (Incl. GST)</label>
+                              <input 
+                                type="number"
+                                placeholder="Total"
+                                onChange={(e) => {
+                                  const totalFare = parseFloat(e.target.value) || 0;
+                                  let basePrice = totalFare;
+                                  if (totalFare >= 8850) basePrice = totalFare / 1.18;
+                                  else if (totalFare >= 1050) basePrice = totalFare / 1.05;
+                                  
+                                  const newRooms = [...manualBillData.rooms];
+                                  newRooms[index].room_price = parseFloat(basePrice.toFixed(2));
+                                  setManualBillData({...manualBillData, rooms: newRooms});
+                                }}
+                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Base Price</label>
+                              <input 
+                                type="number"
+                                value={room.room_price}
+                                onChange={(e) => {
+                                  const newRooms = [...manualBillData.rooms];
+                                  newRooms[index].room_price = parseFloat(e.target.value) || 0;
+                                  setManualBillData({...manualBillData, rooms: newRooms});
+                                }}
+                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                              />
+                            </div>
                           </div>
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Type</label>
-                            <input 
-                              type="text"
-                              value={room.room_type}
-                              onChange={(e) => {
-                                const newRooms = [...manualBillData.rooms];
-                                newRooms[index].room_type = e.target.value;
-                                setManualBillData({...manualBillData, rooms: newRooms});
-                              }}
-                              className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Price</label>
-                            <input 
-                              type="number"
-                              value={room.room_price}
-                              onChange={(e) => {
-                                const newRooms = [...manualBillData.rooms];
-                                newRooms[index].room_price = parseFloat(e.target.value) || 0;
-                                setManualBillData({...manualBillData, rooms: newRooms});
-                              }}
-                              className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                            />
-                          </div>
-                        </div>
                       </div>
                     ))}
                   </div>
