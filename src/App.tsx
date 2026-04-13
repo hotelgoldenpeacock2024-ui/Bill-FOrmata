@@ -33,7 +33,9 @@ import {
   ShieldCheck,
   ExternalLink,
   Sparkles,
-  RefreshCw
+  RefreshCw,
+  TrendingUp,
+  ArrowUpRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -199,7 +201,6 @@ export default function App() {
   const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
   const [fetchingGST, setFetchingGST] = useState(false);
   const [fetchingAI, setFetchingAI] = useState(false);
-  const [usingMockGST, setUsingMockGST] = useState(false);
   const [gstConfig, setGstConfig] = useState<{configured: boolean, providers: any} | null>(null);
   const [includeDsdaMap, setIncludeDsdaMap] = useState<Record<string, boolean>>({});
   const [isRetrieving, setIsRetrieving] = useState(false);
@@ -275,7 +276,6 @@ export default function App() {
     }
 
     setFetchingGST(true);
-    setUsingMockGST(false);
     setFetchingAI(false);
     
     try {
@@ -297,15 +297,14 @@ export default function App() {
           }));
         }
       } else {
-        // If backend returns error or success: false (like 404, 500, or inactive status), try AI Lookup
-        console.log("Backend GST fetch failed or inactive, trying AI fallback...");
+        // If backend returns error or success: false, try AI Lookup
+        console.log("Backend GST fetch failed or inactive, trying AI lookup...");
         await fetchGSTWithAI(gstin, target);
       }
     } catch (error) {
       console.error("GST Fetch error", error);
-      setUsingMockGST(true);
-      // Fallback to mock if AI also fails or other errors
-      applyMockGSTData(gstin, target);
+      // Try AI as last resort if network error to backend
+      await fetchGSTWithAI(gstin, target);
     } finally {
       setFetchingGST(false);
     }
@@ -352,52 +351,12 @@ export default function App() {
       }
     } catch (error) {
       console.error("AI GST Fetch error", error);
-      applyMockGSTData(gstin, target);
-      setUsingMockGST(true);
+      alert("Could not fetch GST details. Please enter manually or check the GSTIN.");
     } finally {
       setFetchingAI(false);
     }
   };
 
-  const applyMockGSTData = (gstin: string, target: 'booking' | 'manual') => {
-    const stateCode = gstin.substring(0, 2);
-    const mockCompanies = [
-      "Global Tech Solutions Pvt Ltd",
-      "Apex Retail Enterprises",
-      "Sunrise Hospitality Group",
-      "Blue Ocean Logistics",
-      "Emerald Manufacturing Corp",
-      "Golden Peacock Trading Co.",
-      "Silver Line Textiles",
-      "Modern Infrastructure Ltd"
-    ];
-    const mockAddresses = [
-      "123 Business Park, Sector 45, Industrial Area",
-      "Suite 501, Regency Tower, MG Road",
-      "Plot No. 88, Green Valley Estate, Phase II",
-      "4th Floor, Landmark Building, Commercial Hub",
-      "Building 7, Innovation Campus, Tech Park",
-      "Shop 12, Central Market, Mall Road",
-      "Industrial Estate, Plot 44, NH-8",
-      "Business Center, Level 2, Airport Road"
-    ];
-    const index = parseInt(gstin.charAt(12), 36) % mockCompanies.length;
-    const mockData = {
-      name: `[DEMO] ${mockCompanies[index]}`,
-      address: `${mockAddresses[index]}, State Code: ${stateCode} (Derived from GSTIN)`
-    };
-
-    if (target === 'booking') {
-      setGuestName(mockData.name);
-      setGuestAddress(mockData.address);
-    } else {
-      setManualBillData(prev => ({
-        ...prev,
-        guest_name: mockData.name,
-        guest_address: mockData.address
-      }));
-    }
-  };
   const [showReview, setShowReview] = useState(false);
   const [dailyBookingsDate, setDailyBookingsDate] = useState(new Date().toISOString().split('T')[0]);
   const [ws, setWs] = useState<WebSocket | null>(null);
@@ -1473,15 +1432,10 @@ export default function App() {
 
     // Iterate through each day of the month
     for (let day = 1; day <= daysInMonth; day++) {
-      const currentDateStr = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+      const currentDate = new Date(year, month - 1, day);
+      const currentDateStr = currentDate.toISOString().split('T')[0];
       const displayDate = `${day}-${new Date(year, month - 1).toLocaleString('default', { month: 'short' })}-${year.toString().slice(-2)}`;
       
-      // Filter bills generated on this specific day
-      const dayBills = allBills.filter(b => {
-        const billDate = new Date(b.created_at).toISOString().split('T')[0];
-        return billDate === currentDateStr;
-      });
-
       // Add Day Header
       aoaData.push(["DATE", displayDate, "", "", "", "", "", "", "", ""]);
       aoaData.push(["ROOM NO", "RATE", "CGST", "SGST", "TOTAL", "", "", "", "", ""]);
@@ -1493,53 +1447,57 @@ export default function App() {
 
       // Add a row for every room
       sortedRooms.forEach(room => {
-        // Find bills for this room on this day
-        // Since rooms_data is a JSON string of rooms, we need to check if this room was part of any bill
-        const roomBills = dayBills.filter(b => {
-          try {
-            const roomsInBill = JSON.parse(b.rooms_data);
-            return roomsInBill.some((r: any) => r.room_number === room.room_number);
-          } catch (e) {
-            return false;
-          }
-        });
-
         let roomRate = 0;
         let roomCgst = 0;
         let roomSgst = 0;
         let roomTotal = 0;
 
-        roomBills.forEach(b => {
+        // Find all bills that were active on this specific day
+        allBills.forEach(b => {
           try {
             const roomsInBill = JSON.parse(b.rooms_data);
-            const roomCount = roomsInBill.length;
+            const isRoomInBill = roomsInBill.some((r: any) => r.room_number === room.room_number);
             
-            // Pro-rate the bill values for this specific room
-            // (This is an approximation if multiple rooms are in one bill)
-            const share = 1 / roomCount;
-            const basePriceShare = b.base_price * share;
-            const gstShare = b.gst_amount * share;
-            const dsdaShare = b.dsda_charge * share;
-            
-            roomRate += basePriceShare;
-            
-            // Determine GST split
-            const guestGST = b.guest_gst || '';
-            const isInterState = guestGST && guestGST.substring(0, 2) !== (hotelSettings.state_code || '19');
-            
-            if (b.bill_type === 'GST' && !isInterState) {
-              roomCgst += gstShare / 2;
-              roomSgst += gstShare / 2;
-            } else if (b.bill_type === 'GST' && isInterState) {
-              // For IGST, we'll put it in a way that it still sums up, maybe split it for the report columns
-              // or just put it in one. Given the columns are CGST/SGST, splitting 50/50 is the safest for "Total" consistency
-              roomCgst += gstShare / 2;
-              roomSgst += gstShare / 2;
+            if (isRoomInBill) {
+              const checkInDate = new Date(b.check_in);
+              const checkOutDate = new Date(b.check_out);
+              
+              // A stay is active from checkInDate up to (but not including) checkOutDate
+              // Example: In 1st, Out 4th -> Active on 1st, 2nd, 3rd (3 nights)
+              if (currentDate >= checkInDate && currentDate < checkOutDate) {
+                const nights = calculateNights(b.check_in, b.check_out);
+                const roomCount = roomsInBill.length;
+                
+                // Divide the bill values by nights and then by number of rooms in that bill
+                const dailyShare = 1 / (nights * roomCount);
+                
+                const basePriceDaily = b.base_price * dailyShare;
+                const gstDaily = b.gst_amount * dailyShare;
+                const dsdaDaily = b.dsda_charge * dailyShare;
+                
+                roomRate += basePriceDaily;
+                
+                // Determine GST split
+                const guestGST = b.guest_gst || '';
+                const isInterState = guestGST && guestGST.substring(0, 2) !== (hotelSettings.state_code || '19');
+                
+                if (b.bill_type === 'GST') {
+                  if (!isInterState) {
+                    roomCgst += gstDaily / 2;
+                    roomSgst += gstDaily / 2;
+                  } else {
+                    // For IGST, we'll still split it for report consistency or put it in one
+                    // User's format has CGST/SGST columns, so we split it 50/50 for display
+                    roomCgst += gstDaily / 2;
+                    roomSgst += gstDaily / 2;
+                  }
+                }
+                
+                roomTotal += basePriceDaily + gstDaily + dsdaDaily;
+              }
             }
-            
-            roomTotal += basePriceShare + gstShare + dsdaShare;
           } catch (e) {
-            console.error("Error parsing rooms_data in report", e);
+            // Skip invalid bills
           }
         });
 
@@ -1559,13 +1517,6 @@ export default function App() {
       });
 
       // Add summary row at the end of the day's room list
-      // The user's example shows: 313,0,0,0,0,,Rate,Sgst,Cgst,Total
-      // Followed by: ,,,,,0,0,0,0
-      // Wait, let's look closer at the example:
-      // 312,0,0,0,0,,Rate,Sgst,Cgst,Total
-      // 313,0,0,0,0,,0,0,0,0
-      
-      // I'll add the summary labels on the last room's row and the totals on the next row
       const lastRowIndex = aoaData.length - 1;
       aoaData[lastRowIndex][6] = "Rate";
       aoaData[lastRowIndex][7] = "Sgst";
@@ -2545,11 +2496,6 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                   <Sparkles size={10} /> Searching with AI...
                                 </p>
                               )}
-                              {usingMockGST && (
-                                <p className="text-[10px] text-orange-600 font-medium mt-1 animate-pulse">
-                                  ⚠️ Using Demo Data. Configure API Key in Settings for real data.
-                                </p>
-                              )}
                             </div>
                             <div className="space-y-2">
                               <label className="text-xs font-bold uppercase tracking-wider text-black/40 flex items-center gap-2">
@@ -3483,99 +3429,133 @@ Thank you for choosing ${hotelSettings.hotel_name}!
               </div>
             </div>
           </motion.div>
-        ) : activeView === 'all_bills' ? (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-8"
-          >
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div>
-                <h2 className="text-3xl font-bold tracking-tight">All Bills History</h2>
-                <p className="text-black/40 mt-1">View and manage all generated bills and booking history.</p>
-              </div>
-              
-              <div className="flex flex-wrap items-center gap-4">
-                <div className="flex items-center gap-2 bg-white px-4 h-12 rounded-xl border border-black/5 shadow-sm">
-                  <Calendar size={18} className="text-black/30" />
-                  <input 
-                    type="month" 
-                    value={selectedBillMonth}
-                    onChange={(e) => setSelectedBillMonth(e.target.value)}
-                    className="bg-transparent border-none outline-none text-sm font-bold"
-                  />
+        ) : activeView === 'all_bills' ? (() => {
+            const filteredBills = allBills.filter(b => {
+              const matchesSearch = b.guest_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                b.invoice_id.toLowerCase().includes(searchQuery.toLowerCase());
+              const matchesMonth = b.check_in.startsWith(selectedBillMonth);
+              return matchesSearch && matchesMonth;
+            });
+
+            const totalSale = filteredBills.reduce((sum, b) => sum + (Number(b.total_amount) || 0), 0);
+            const totalGST = filteredBills.reduce((sum, b) => sum + (Number(b.gst_amount) || 0), 0);
+            const totalWithoutGST = totalSale - totalGST;
+
+            return (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-8"
+              >
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div>
+                    <h2 className="text-3xl font-bold tracking-tight">All Bills History</h2>
+                    <p className="text-black/40 mt-1">View and manage all generated bills and booking history.</p>
+                  </div>
+                  
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="flex items-center gap-2 bg-white px-4 h-12 rounded-xl border border-black/5 shadow-sm">
+                      <Calendar size={18} className="text-black/30" />
+                      <input 
+                        type="month" 
+                        value={selectedBillMonth}
+                        onChange={(e) => setSelectedBillMonth(e.target.value)}
+                        className="bg-transparent border-none outline-none text-sm font-bold"
+                      />
+                    </div>
+
+                    <button 
+                      onClick={() => generateMonthlyReportPDF(selectedBillMonth)}
+                      className="h-12 px-6 bg-primary/10 text-primary rounded-xl font-bold hover:bg-primary/20 transition-all flex items-center gap-2"
+                    >
+                      <Download size={18} />
+                      PDF Report
+                    </button>
+
+                    <button 
+                      onClick={() => generateMonthlyExcelReport(selectedBillMonth)}
+                      className="h-12 px-6 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/20"
+                    >
+                      <FileText size={18} />
+                      Excel Report
+                    </button>
+
+                    <button 
+                      onClick={retrieveDeletedBookings}
+                      disabled={isRetrieving}
+                      className="h-12 px-6 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition-all flex items-center gap-2 disabled:opacity-50"
+                    >
+                      <RefreshCw size={18} className={isRetrieving ? 'animate-spin' : ''} />
+                      {isRetrieving ? 'Retrieving...' : 'Retrieve Deleted'}
+                    </button>
+
+                    <button 
+                      onClick={clearAllBills}
+                      className="h-12 px-6 bg-rose-50 text-rose-600 rounded-xl font-bold hover:bg-rose-100 transition-all flex items-center gap-2"
+                    >
+                      <Trash2 size={18} />
+                      Clear History
+                    </button>
+
+                    <div className="relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-black/30" size={18} />
+                      <input 
+                        type="text" 
+                        placeholder="Search bills..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        className="h-12 pl-12 pr-6 rounded-xl bg-white border border-black/5 focus:border-primary focus:ring-0 transition-all outline-none w-64 shadow-sm"
+                      />
+                    </div>
+                  </div>
                 </div>
 
-                <button 
-                  onClick={() => generateMonthlyReportPDF(selectedBillMonth)}
-                  className="h-12 px-6 bg-primary/10 text-primary rounded-xl font-bold hover:bg-primary/20 transition-all flex items-center gap-2"
-                >
-                  <Download size={18} />
-                  PDF Report
-                </button>
+                {/* Summary Totals */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div className="bg-white p-6 rounded-3xl border border-black/5 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-black/40 mb-1">Total Sale (Grand Total)</p>
+                    <p className="text-2xl font-bold text-black">Rs. {totalSale.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                    <div className="mt-2 flex items-center gap-1 text-[10px] text-emerald-600 font-bold">
+                      <TrendingUp size={12} />
+                      <span>Gross Revenue</span>
+                    </div>
+                  </div>
+                  
+                  <div className="bg-white p-6 rounded-3xl border border-black/5 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-black/40 mb-1">Total GST Collected</p>
+                    <p className="text-2xl font-bold text-primary">Rs. {totalGST.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                    <div className="mt-2 flex items-center gap-1 text-[10px] text-primary font-bold">
+                      <FileText size={12} />
+                      <span>Tax Liability</span>
+                    </div>
+                  </div>
 
-                <button 
-                  onClick={() => generateMonthlyExcelReport(selectedBillMonth)}
-                  className="h-12 px-6 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/20"
-                >
-                  <FileText size={18} />
-                  Excel Report
-                </button>
-
-                <button 
-                  onClick={retrieveDeletedBookings}
-                  disabled={isRetrieving}
-                  className="h-12 px-6 bg-blue-50 text-blue-600 rounded-xl font-bold hover:bg-blue-100 transition-all flex items-center gap-2 disabled:opacity-50"
-                >
-                  <RefreshCw size={18} className={isRetrieving ? 'animate-spin' : ''} />
-                  {isRetrieving ? 'Retrieving...' : 'Retrieve Deleted'}
-                </button>
-
-                <button 
-                  onClick={clearAllBills}
-                  className="h-12 px-6 bg-rose-50 text-rose-600 rounded-xl font-bold hover:bg-rose-100 transition-all flex items-center gap-2"
-                >
-                  <Trash2 size={18} />
-                  Clear History
-                </button>
-
-                <div className="relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-black/30" size={18} />
-                  <input 
-                    type="text" 
-                    placeholder="Search bills..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="h-12 pl-12 pr-6 rounded-xl bg-white border border-black/5 focus:border-primary focus:ring-0 transition-all outline-none w-64 shadow-sm"
-                  />
+                  <div className="bg-white p-6 rounded-3xl border border-black/5 shadow-sm">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-black/40 mb-1">Net Sale (Without GST)</p>
+                    <p className="text-2xl font-bold text-emerald-600">Rs. {totalWithoutGST.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+                    <div className="mt-2 flex items-center gap-1 text-[10px] text-emerald-600 font-bold">
+                      <ArrowUpRight size={12} />
+                      <span>Net Revenue</span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <div className="bg-white rounded-3xl shadow-sm border border-black/5 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left">
-                  <thead>
-                    <tr className="border-b border-black/5">
-                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Invoice ID</th>
-                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Guest</th>
-                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Room(s)</th>
-                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Stay Dates</th>
-                      <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-black/5">
-                    {allBills
-                      .filter(b => {
-                        const matchesSearch = b.guest_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          b.invoice_id.toLowerCase().includes(searchQuery.toLowerCase());
-                        
-                        const matchesMonth = b.check_in.startsWith(selectedBillMonth);
-                        
-                        return matchesSearch && matchesMonth;
-                      })
-                      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                      .map(bill => {
+                <div className="bg-white rounded-3xl shadow-sm border border-black/5 overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="border-b border-black/5">
+                          <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Invoice ID</th>
+                          <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Guest</th>
+                          <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Room(s)</th>
+                          <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40">Stay Dates</th>
+                          <th className="px-8 py-4 text-[10px] font-bold uppercase tracking-widest text-black/40 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-black/5">
+                        {filteredBills
+                          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+                          .map(bill => {
                         const rooms = JSON.parse(bill.rooms_data || '[]');
                         return (
                           <tr key={bill.id} className="hover:bg-black/[0.01]">
@@ -3620,7 +3600,9 @@ Thank you for choosing ${hotelSettings.hotel_name}!
               </div>
             </div>
           </motion.div>
-        ) : activeView === 'settings' ? (
+        );
+      })()
+        : activeView === 'settings' ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -4099,11 +4081,6 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                       {fetchingAI && (
                         <p className="text-[10px] text-primary font-medium mt-1 flex items-center gap-1 animate-pulse">
                           <Sparkles size={10} /> Searching with AI...
-                        </p>
-                      )}
-                      {usingMockGST && (
-                        <p className="text-[10px] text-orange-600 font-medium mt-1 animate-pulse">
-                          ⚠️ Using Demo Data. Configure API Key in Settings for real data.
                         </p>
                       )}
                     </div>
