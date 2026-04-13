@@ -532,6 +532,39 @@ export default function App() {
     }
   };
 
+  const downloadBillFromHistory = async (bill: Bill) => {
+    const rooms = JSON.parse(bill.rooms_data || '[]');
+    const fakeBooking: any = {
+      booking_id: bill.booking_id || bill.invoice_id,
+      guest_name: bill.guest_name,
+      guest_phone: bill.guest_phone,
+      guest_email: bill.guest_email,
+      guest_address: bill.guest_address,
+      guest_gst: bill.guest_gst,
+      check_in: bill.check_in,
+      check_out: bill.check_out,
+      dsda_charge: bill.dsda_charge,
+      room_price: rooms[0]?.room_price || 0,
+      room_number: rooms[0]?.room_number || '',
+      room_type: rooms[0]?.room_type || '',
+      advance_payment: 0
+    };
+
+    const fakeGroupBookings: any[] = rooms.map((r: any, idx: number) => ({
+      ...fakeBooking,
+      id: Date.now() + idx,
+      room_number: r.room_number,
+      room_type: r.room_type,
+      room_price: r.room_price
+    }));
+
+    if (bill.bill_type === 'GST') {
+      await generateGSTBillPDF(fakeBooking, true, fakeGroupBookings, true);
+    } else {
+      await downloadReceiptForBooking(fakeBooking, true, fakeGroupBookings, true);
+    }
+  };
+
   const deleteBill = async (id: number) => {
     if (!confirm("Are you sure you want to delete this bill?")) return;
     try {
@@ -1130,7 +1163,7 @@ export default function App() {
     return `GP/${finYear}/${numericId}`;
   };
 
-  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[]) => {
+  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
@@ -1155,7 +1188,9 @@ export default function App() {
     const balance = Math.round(total - advancePayment);
 
     // Save to DB
-    await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings);
+    if (!skipSave) {
+      await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings);
+    }
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
 
@@ -1409,7 +1444,7 @@ export default function App() {
     XLSX.writeFile(workbook, `Monthly_Report_${monthStr}.xlsx`);
   };
 
-  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[]) => {
+  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
@@ -1464,7 +1499,9 @@ export default function App() {
     const roundOff = grandTotal - totalWithTax;
 
     // Save to DB
-    await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings);
+    if (!skipSave) {
+      await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings);
+    }
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
 
@@ -3369,6 +3406,13 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                             </td>
                             <td className="px-8 py-4">
                               <div className="flex items-center justify-end gap-3">
+                                <button 
+                                  onClick={() => downloadBillFromHistory(bill)}
+                                  className="p-2 hover:bg-primary/10 rounded-lg text-primary hover:text-primary-hover transition-all"
+                                  title="Download PDF"
+                                >
+                                  <Download size={16} />
+                                </button>
                                 <button 
                                   onClick={() => deleteBill(bill.id)}
                                   className="p-2 hover:bg-rose-50 rounded-lg text-rose-400 hover:text-rose-600 transition-all"
