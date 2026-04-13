@@ -496,10 +496,10 @@ export default function App() {
     }
   };
 
-  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[]) => {
+  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[], invoiceId: string) => {
     try {
       const billData = {
-        invoice_id: getInvoiceId(booking),
+        invoice_id: invoiceId,
         booking_id: booking.booking_id,
         guest_name: booking.guest_name,
         guest_phone: booking.guest_phone,
@@ -689,18 +689,21 @@ export default function App() {
       const res = await fetch('/api/bookings');
       const data = await res.json();
       if (data.error) {
-        setDbError(data.error);
-        if (data.error.startsWith('{')) {
-          throw new Error(data.error);
+        let errorMessage = data.error;
+        if (typeof data.error === 'string' && data.error.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(data.error);
+            errorMessage = parsed.error || data.error;
+          } catch (e) {
+            // ignore
+          }
         }
+        setDbError(errorMessage);
         return;
       }
       setAllBookings(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error("Error fetching bookings:", error);
-      if (error instanceof Error && error.message.startsWith('{')) {
-        throw error;
-      }
     }
   };
 
@@ -738,16 +741,22 @@ export default function App() {
       });
       const data = await res.json();
       if (data.error) {
-        if (data.error.startsWith('{')) {
-          throw new Error(data.error);
+        let errorMessage = data.error;
+        if (typeof data.error === 'string' && data.error.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(data.error);
+            errorMessage = parsed.error || data.error;
+          } catch (e) {
+            // ignore
+          }
         }
-        alert(data.error);
+        alert("Failed to finalize reservation: " + errorMessage);
         return;
       }
       if (data.success) {
         const bookedRooms = rooms.filter(r => selectedRoomIds.includes(r.id));
         setLastBookedRooms(bookedRooms);
-        const bookingId = `LS-${Math.floor(Math.random() * 90000) + 10000}`;
+        const bookingId = data.booking_id || `LS-${Math.floor(Math.random() * 90000) + 10000}`;
         setLastBookingDetails({
           guestName,
           guestEmail,
@@ -1147,10 +1156,15 @@ export default function App() {
     doc.save(`Receipt-${lastBookingDetails.bookingId}.pdf`);
   };
 
-  const getInvoiceId = (booking: Booking) => {
+  const getInvoiceId = (booking: any) => {
+    if (booking.invoice_id) return booking.invoice_id; // Use existing if available
+    
     const date = new Date(booking.check_in);
     const year = date.getFullYear();
     const month = date.getMonth() + 1;
+    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    const monthCode = monthNames[date.getMonth()];
+    
     let finYear = "";
     if (month >= 4) {
       finYear = `${year.toString().slice(-2)}-${(year + 1).toString().slice(-2)}`;
@@ -1158,12 +1172,24 @@ export default function App() {
       finYear = `${(year - 1).toString().slice(-2)}-${year.toString().slice(-2)}`;
     }
     
-    // For serial number, use the booking's ID numeric part
-    const numericId = (booking.id || 0).toString().padStart(3, '0');
-    return `GP/${finYear}/${numericId}`;
+    const monthPrefix = `GP/${finYear}/${monthCode}/`;
+    const existingMonthBills = allBills.filter(b => b.invoice_id && b.invoice_id.startsWith(monthPrefix));
+    
+    let maxSeq = 0;
+    existingMonthBills.forEach(b => {
+      const parts = b.invoice_id.split('/');
+      const seqStr = parts[parts.length - 1];
+      const seq = parseInt(seqStr, 10);
+      if (!isNaN(seq) && seq > maxSeq) {
+        maxSeq = seq;
+      }
+    });
+    
+    const nextSeq = (maxSeq + 1).toString().padStart(2, '0');
+    return `${monthPrefix}${nextSeq}`;
   };
 
-  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false) => {
+  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
@@ -1172,6 +1198,8 @@ export default function App() {
     const dsdaCharge = includeAdditionalCharges ? (booking.dsda_charge || 0) : 0;
     const advancePayment = booking.advance_payment || 0;
     
+    const invoiceId = getInvoiceId(booking);
+
     const doc = new jsPDF();
     const themeColors: Record<string, string> = {
       emerald: '#059669',
@@ -1189,7 +1217,7 @@ export default function App() {
 
     // Save to DB
     if (!skipSave) {
-      await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings);
+      await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings, invoiceId);
     }
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
@@ -1253,7 +1281,6 @@ export default function App() {
       doc.text(`Phone: ${booking.guest_phone}`, 20, 81);
       doc.text(`Occupancy: ${booking.adults} Adults, ${booking.children} Children`, 20, 86);
 
-      const invoiceId = getInvoiceId(booking);
       doc.text(`Invoice No: ${invoiceId}`, 120, 71);
       doc.text(`Date: ${formatDateDDMMYYYY(new Date())}`, 120, 76);
       doc.text(`Stay: ${formatDateDDMMYYYY(booking.check_in)} to ${formatDateDDMMYYYY(booking.check_out)}`, 120, 81);
@@ -1348,7 +1375,9 @@ export default function App() {
     doc.text('Check-in: 10:30 AM | Check-out: 09:30 AM', 105, footerY + 12, { align: 'center' });
     }
 
-    doc.save(`Receipt-${booking.booking_id}.pdf`);
+    if (!skipDownload) {
+      doc.save(`Receipt-${booking.booking_id}.pdf`);
+    }
   };
 
   const generateMonthlyReportPDF = (monthStr: string) => {
@@ -1444,11 +1473,14 @@ export default function App() {
     XLSX.writeFile(workbook, `Monthly_Report_${monthStr}.xlsx`);
   };
 
-  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false) => {
+  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
     }
+    
+    const invoiceId = getInvoiceId(booking);
+
     const doc = new jsPDF();
     const themeColors: Record<string, string> = {
       emerald: '#059669',
@@ -1500,7 +1532,7 @@ export default function App() {
 
     // Save to DB
     if (!skipSave) {
-      await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings);
+      await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings, invoiceId);
     }
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
@@ -1564,7 +1596,6 @@ export default function App() {
     doc.text(`GSTIN: ${guestGST || 'N/A'}`, 20, 81);
     doc.text(`Phone: ${booking.guest_phone || 'N/A'}`, 20, 86);
 
-    const invoiceId = getInvoiceId(booking);
     doc.text(`Invoice No: ${invoiceId}`, 120, 71);
     doc.text(`Date: ${formatDateDDMMYYYY(new Date())}`, 120, 76);
     doc.text(`Booking ID: ${booking.booking_id}`, 120, 81);
@@ -1675,7 +1706,9 @@ export default function App() {
     doc.text('3. All disputes are subject to local jurisdiction.', 20, footerY + 15);
     }
 
-    doc.save(`${booking.guest_name}_GST_Bill_${booking.booking_id}.pdf`);
+    if (!skipDownload) {
+      doc.save(`${booking.guest_name}_GST_Bill_${booking.booking_id}.pdf`);
+    }
   };
 
   const generateAdvanceReceiptPDF = async () => {
@@ -2889,10 +2922,13 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                       <Settings size={10} /> Change Details
                                     </button>
                                     <button 
-                                      onClick={() => downloadReceiptForBooking(booking)}
+                                      onClick={() => {
+                                        downloadReceiptForBooking(booking, true, undefined, false, true);
+                                        alert("Bill generated and saved to All Bills history.");
+                                      }}
                                       className="text-[10px] text-emerald-600 font-bold hover:underline text-left px-3 flex items-center gap-1"
                                     >
-                                      <Download size={10} /> Download Receipt
+                                      <FileText size={10} /> Generate Bill
                                     </button>
                                   </div>
                                 )}
@@ -3269,14 +3305,20 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                 </div>
                                 <div className="flex items-center gap-3">
                                   <button 
-                                    onClick={() => downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true)}
+                                    onClick={() => {
+                                      downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true);
+                                      alert("Normal Bill generated and saved to All Bills history.");
+                                    }}
                                     className="px-4 py-2 bg-black/5 text-black/60 rounded-lg text-xs font-bold hover:bg-black/10 transition-all flex items-center gap-2"
                                   >
                                     <Printer size={14} />
                                     Normal Bill
                                   </button>
                                   <button 
-                                    onClick={() => generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true)}
+                                    onClick={() => {
+                                      generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true);
+                                      alert("GST Bill generated and saved to All Bills history.");
+                                    }}
                                     className="px-4 py-2 bg-primary-light text-primary-text rounded-lg text-xs font-bold hover:bg-primary-light/80 transition-all flex items-center gap-2"
                                   >
                                     <FileText size={14} />
@@ -4113,7 +4155,9 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings);
+                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true);
+                        alert("Manual Normal Bill generated and saved to All Bills history.");
+                        setShowManualBill(false);
                       }}
                       className="flex-1 h-14 bg-black/5 text-black rounded-2xl font-bold hover:bg-black/10 transition-all flex items-center justify-center gap-2"
                     >
@@ -4141,7 +4185,9 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings);
+                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true);
+                        alert("Manual GST Bill generated and saved to All Bills history.");
+                        setShowManualBill(false);
                       }}
                       className="flex-1 h-14 bg-primary text-white rounded-2xl font-bold hover:bg-primary-hover transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20"
                     >

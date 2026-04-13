@@ -474,7 +474,12 @@ apiRouter.post("/bookings", async (req, res) => {
     });
 
     const { error: insertError } = await supabase.from("bookings").insert(bookingsToInsert);
-    if (insertError) throw insertError;
+    if (insertError) {
+      if (insertError.message && insertError.message.includes("column") && insertError.message.includes("does not exist")) {
+        throw new Error(`Database schema error: ${insertError.message}. Please run the SQL script in 'update_bookings_schema.sql' in your Supabase SQL Editor to update the bookings table.`);
+      }
+      throw insertError;
+    }
     
     broadcast({ type: 'BOOKING_UPDATED' });
     res.json({ success: true, booking_id });
