@@ -1455,25 +1455,139 @@ export default function App() {
   };
 
   const generateMonthlyExcelReport = (monthStr: string) => {
-    const filteredBills = allBills.filter(b => b.check_in.startsWith(monthStr));
+    const [year, month] = monthStr.split('-').map(Number);
+    const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' }).toUpperCase();
     
-    const reportData = filteredBills.map(b => ({
-      'Invoice ID': b.invoice_id,
-      'Date': formatDateDDMMYYYY(b.check_in),
-      'Guest Name': b.guest_name,
-      'Phone': b.guest_phone,
-      'GSTIN': b.guest_gst || 'N/A',
-      'Base Price': b.base_price,
-      'GST Amount': b.gst_amount,
-      'Additional Charge': b.dsda_charge,
-      'Total Amount': b.total_amount,
-      'Bill Type': b.bill_type
-    }));
+    // Get all days in the month
+    const daysInMonth = new Date(year, month, 0).getDate();
+    
+    // Prepare the data array for the worksheet (AOA - Array of Arrays)
+    const aoaData: any[][] = [];
+    
+    // 1. Month Name Header
+    aoaData.push([monthName, "", "", "", "", "", "", "", "", ""]);
+    aoaData.push(["", "", "", "", "", "", "", "", "", ""]); // Empty row
+    
+    // Get all rooms sorted by room number
+    const sortedRooms = [...rooms].sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
 
-    const worksheet = XLSX.utils.json_to_sheet(reportData);
+    // Iterate through each day of the month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const currentDateStr = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+      const displayDate = `${day}-${new Date(year, month - 1).toLocaleString('default', { month: 'short' })}-${year.toString().slice(-2)}`;
+      
+      // Filter bills generated on this specific day
+      const dayBills = allBills.filter(b => {
+        const billDate = new Date(b.created_at).toISOString().split('T')[0];
+        return billDate === currentDateStr;
+      });
+
+      // Add Day Header
+      aoaData.push(["DATE", displayDate, "", "", "", "", "", "", "", ""]);
+      aoaData.push(["ROOM NO", "RATE", "CGST", "SGST", "TOTAL", "", "", "", "", ""]);
+
+      let dayRateTotal = 0;
+      let dayCgstTotal = 0;
+      let daySgstTotal = 0;
+      let dayGrandTotal = 0;
+
+      // Add a row for every room
+      sortedRooms.forEach(room => {
+        // Find bills for this room on this day
+        // Since rooms_data is a JSON string of rooms, we need to check if this room was part of any bill
+        const roomBills = dayBills.filter(b => {
+          try {
+            const roomsInBill = JSON.parse(b.rooms_data);
+            return roomsInBill.some((r: any) => r.room_number === room.room_number);
+          } catch (e) {
+            return false;
+          }
+        });
+
+        let roomRate = 0;
+        let roomCgst = 0;
+        let roomSgst = 0;
+        let roomTotal = 0;
+
+        roomBills.forEach(b => {
+          try {
+            const roomsInBill = JSON.parse(b.rooms_data);
+            const roomCount = roomsInBill.length;
+            
+            // Pro-rate the bill values for this specific room
+            // (This is an approximation if multiple rooms are in one bill)
+            const share = 1 / roomCount;
+            const basePriceShare = b.base_price * share;
+            const gstShare = b.gst_amount * share;
+            const dsdaShare = b.dsda_charge * share;
+            
+            roomRate += basePriceShare;
+            
+            // Determine GST split
+            const guestGST = b.guest_gst || '';
+            const isInterState = guestGST && guestGST.substring(0, 2) !== (hotelSettings.state_code || '19');
+            
+            if (b.bill_type === 'GST' && !isInterState) {
+              roomCgst += gstShare / 2;
+              roomSgst += gstShare / 2;
+            } else if (b.bill_type === 'GST' && isInterState) {
+              // For IGST, we'll put it in a way that it still sums up, maybe split it for the report columns
+              // or just put it in one. Given the columns are CGST/SGST, splitting 50/50 is the safest for "Total" consistency
+              roomCgst += gstShare / 2;
+              roomSgst += gstShare / 2;
+            }
+            
+            roomTotal += basePriceShare + gstShare + dsdaShare;
+          } catch (e) {
+            console.error("Error parsing rooms_data in report", e);
+          }
+        });
+
+        aoaData.push([
+          room.room_number,
+          roomRate.toFixed(2),
+          roomCgst.toFixed(2),
+          roomSgst.toFixed(2),
+          roomTotal.toFixed(2),
+          "", "", "", "", ""
+        ]);
+
+        dayRateTotal += roomRate;
+        dayCgstTotal += roomCgst;
+        daySgstTotal += roomSgst;
+        dayGrandTotal += roomTotal;
+      });
+
+      // Add summary row at the end of the day's room list
+      // The user's example shows: 313,0,0,0,0,,Rate,Sgst,Cgst,Total
+      // Followed by: ,,,,,0,0,0,0
+      // Wait, let's look closer at the example:
+      // 312,0,0,0,0,,Rate,Sgst,Cgst,Total
+      // 313,0,0,0,0,,0,0,0,0
+      
+      // I'll add the summary labels on the last room's row and the totals on the next row
+      const lastRowIndex = aoaData.length - 1;
+      aoaData[lastRowIndex][6] = "Rate";
+      aoaData[lastRowIndex][7] = "Sgst";
+      aoaData[lastRowIndex][8] = "Cgst";
+      aoaData[lastRowIndex][9] = "Total";
+      
+      aoaData.push(["", "", "", "", "", "", 
+        dayRateTotal.toFixed(2), 
+        daySgstTotal.toFixed(2), 
+        dayCgstTotal.toFixed(2), 
+        dayGrandTotal.toFixed(2)
+      ]);
+      
+      // Add some spacing between days
+      aoaData.push(["", "", "", "", "", "", "", "", "", ""]);
+      aoaData.push(["", "", "", "", "", "", "", "", "", ""]);
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet(aoaData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Monthly Report');
-    XLSX.writeFile(workbook, `Monthly_Report_${monthStr}.xlsx`);
+    XLSX.writeFile(workbook, `Monthly_Report_${monthName}_${year}.xlsx`);
   };
 
   const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: Date) => {
