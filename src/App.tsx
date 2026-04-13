@@ -192,9 +192,11 @@ export default function App() {
     rooms: [{ room_number: '', room_type: '', room_price: 0 }],
     check_in: new Date().toISOString().split('T')[0],
     check_out: new Date(Date.now() + 86400000).toISOString().split('T')[0],
+    bill_date: new Date().toISOString().split('T')[0],
     dsda_charge: 0,
     include_dsda: true
   });
+  const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
   const [fetchingGST, setFetchingGST] = useState(false);
   const [fetchingAI, setFetchingAI] = useState(false);
   const [usingMockGST, setUsingMockGST] = useState(false);
@@ -496,7 +498,7 @@ export default function App() {
     }
   };
 
-  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[], invoiceId: string) => {
+  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[], invoiceId: string, customDate?: Date) => {
     try {
       const billData = {
         invoice_id: invoiceId,
@@ -517,7 +519,8 @@ export default function App() {
         gst_amount: gstAmount,
         dsda_charge: dsdaCharge,
         total_amount: totalAmount,
-        bill_type: billType
+        bill_type: billType,
+        created_at: customDate ? customDate.toISOString() : undefined
       };
 
       await fetch('/api/bills', {
@@ -1156,10 +1159,10 @@ export default function App() {
     doc.save(`Receipt-${lastBookingDetails.bookingId}.pdf`);
   };
 
-  const getInvoiceId = (booking: any) => {
+  const getInvoiceId = (booking: any, customDate?: Date) => {
     if (booking.invoice_id) return booking.invoice_id; // Use existing if available
     
-    const date = new Date(booking.check_in);
+    const date = customDate || new Date(booking.check_in);
     const year = date.getFullYear();
     const month = date.getMonth() + 1;
     const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
@@ -1189,7 +1192,7 @@ export default function App() {
     return `${monthPrefix}${nextSeq}`;
   };
 
-  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false) => {
+  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: Date) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
@@ -1198,7 +1201,7 @@ export default function App() {
     const dsdaCharge = includeAdditionalCharges ? (booking.dsda_charge || 0) : 0;
     const advancePayment = booking.advance_payment || 0;
     
-    const invoiceId = getInvoiceId(booking);
+    const invoiceId = getInvoiceId(booking, customDate);
 
     const doc = new jsPDF();
     const themeColors: Record<string, string> = {
@@ -1217,7 +1220,7 @@ export default function App() {
 
     // Save to DB
     if (!skipSave) {
-      await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings, invoiceId);
+      await saveBillToDb(booking, 'Normal', total, subtotal, 0, dsdaCharge, groupBookings, invoiceId, customDate);
     }
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
@@ -1282,7 +1285,7 @@ export default function App() {
       doc.text(`Occupancy: ${booking.adults} Adults, ${booking.children} Children`, 20, 86);
 
       doc.text(`Invoice No: ${invoiceId}`, 120, 71);
-      doc.text(`Date: ${formatDateDDMMYYYY(new Date())}`, 120, 76);
+      doc.text(`Date: ${formatDateDDMMYYYY(customDate || new Date())}`, 120, 76);
       doc.text(`Stay: ${formatDateDDMMYYYY(booking.check_in)} to ${formatDateDDMMYYYY(booking.check_out)}`, 120, 81);
       doc.text(`Plan: ${booking.plan || 'Only Room'}`, 120, 86);
 
@@ -1473,13 +1476,13 @@ export default function App() {
     XLSX.writeFile(workbook, `Monthly_Report_${monthStr}.xlsx`);
   };
 
-  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false) => {
+  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: Date) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
     }
     
-    const invoiceId = getInvoiceId(booking);
+    const invoiceId = getInvoiceId(booking, customDate);
 
     const doc = new jsPDF();
     const themeColors: Record<string, string> = {
@@ -1532,7 +1535,7 @@ export default function App() {
 
     // Save to DB
     if (!skipSave) {
-      await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings, invoiceId);
+      await saveBillToDb(booking, 'GST', grandTotal, subtotal, cgstAmount + sgstAmount + igstAmount, additionalCharge, groupBookings, invoiceId, customDate);
     }
 
     const copyLabels = ['Original for Recipient', 'Duplicate for Supplier'];
@@ -1597,7 +1600,7 @@ export default function App() {
     doc.text(`Phone: ${booking.guest_phone || 'N/A'}`, 20, 86);
 
     doc.text(`Invoice No: ${invoiceId}`, 120, 71);
-    doc.text(`Date: ${formatDateDDMMYYYY(new Date())}`, 120, 76);
+    doc.text(`Date: ${formatDateDDMMYYYY(customDate || new Date())}`, 120, 76);
     doc.text(`Booking ID: ${booking.booking_id}`, 120, 81);
     doc.text(`Stay: ${formatDateDDMMYYYY(booking.check_in)} to ${formatDateDDMMYYYY(booking.check_out)}`, 120, 86);
 
@@ -2794,6 +2797,22 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                   ))}
                 </div>
 
+                <div className="flex items-center bg-white rounded-xl border border-black/5 shadow-sm overflow-hidden h-12">
+                  <div className="px-3 border-r border-black/5">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-black/40">Bill Date</p>
+                    <input 
+                      type="date" 
+                      value={billDate}
+                      onChange={(e) => setBillDate(e.target.value)}
+                      className="text-xs bg-transparent border-none focus:ring-0 p-0"
+                    />
+                  </div>
+                  <div className="px-3 bg-primary/5">
+                    <p className="text-[10px] font-bold text-primary uppercase tracking-widest">Active Date</p>
+                    <p className="text-[10px] font-bold text-primary">{formatDateDDMMYYYY(billDate)}</p>
+                  </div>
+                </div>
+
                 <button 
                   onClick={resetFilters}
                   className="h-12 px-4 rounded-xl bg-white border border-black/5 text-black/40 hover:text-rose-600 hover:border-rose-100 transition-all text-sm font-medium flex items-center gap-2 shadow-sm"
@@ -2923,7 +2942,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                     </button>
                                     <button 
                                       onClick={() => {
-                                        downloadReceiptForBooking(booking, true, undefined, false, true);
+                                        downloadReceiptForBooking(booking, true, undefined, false, true, new Date(billDate));
                                         alert("Bill generated and saved to All Bills history.");
                                       }}
                                       className="text-[10px] text-emerald-600 font-bold hover:underline text-left px-3 flex items-center gap-1"
@@ -3227,6 +3246,21 @@ Thank you for choosing ${hotelSettings.hotel_name}!
               </div>
               
               <div className="flex items-center gap-4">
+                <div className="flex items-center bg-white rounded-xl border border-black/5 shadow-sm overflow-hidden h-12">
+                  <div className="px-3 border-r border-black/5">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-black/40">Bill Date</p>
+                    <input 
+                      type="date" 
+                      value={billDate}
+                      onChange={(e) => setBillDate(e.target.value)}
+                      className="text-xs bg-transparent border-none focus:ring-0 p-0"
+                    />
+                  </div>
+                  <div className="px-3 bg-primary/5">
+                    <p className="text-[10px] font-bold text-primary uppercase tracking-widest">Active Date</p>
+                    <p className="text-[10px] font-bold text-primary">{formatDateDDMMYYYY(billDate)}</p>
+                  </div>
+                </div>
                 <button 
                   onClick={() => setShowManualBill(true)}
                   className="h-12 px-6 bg-primary text-white rounded-xl font-bold hover:bg-primary-hover transition-all flex items-center gap-2 shadow-lg shadow-primary/20"
@@ -3306,7 +3340,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                 <div className="flex items-center gap-3">
                                   <button 
                                     onClick={() => {
-                                      downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true);
+                                      downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true, new Date(billDate));
                                       alert("Normal Bill generated and saved to All Bills history.");
                                     }}
                                     className="px-4 py-2 bg-black/5 text-black/60 rounded-lg text-xs font-bold hover:bg-black/10 transition-all flex items-center gap-2"
@@ -3316,7 +3350,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                   </button>
                                   <button 
                                     onClick={() => {
-                                      generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true);
+                                      generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true, new Date(billDate));
                                       alert("GST Bill generated and saved to All Bills history.");
                                     }}
                                     className="px-4 py-2 bg-primary-light text-primary-text rounded-lg text-xs font-bold hover:bg-primary-light/80 transition-all flex items-center gap-2"
@@ -4001,6 +4035,36 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Check-in Date</label>
+                      <input 
+                        type="date"
+                        value={manualBillData.check_in}
+                        onChange={(e) => setManualBillData({...manualBillData, check_in: e.target.value})}
+                        className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Check-out Date</label>
+                      <input 
+                        type="date"
+                        value={manualBillData.check_out}
+                        onChange={(e) => setManualBillData({...manualBillData, check_out: e.target.value})}
+                        className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-primary">Bill Date</label>
+                      <input 
+                        type="date"
+                        value={manualBillData.bill_date}
+                        onChange={(e) => setManualBillData({...manualBillData, bill_date: e.target.value})}
+                        className="w-full h-12 px-4 rounded-xl bg-primary/5 border-primary/20 focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none font-bold text-primary"
+                      />
+                    </div>
+                  </div>
+
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Rooms & Prices</label>
@@ -4092,27 +4156,6 @@ Thank you for choosing ${hotelSettings.hotel_name}!
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Check-in</label>
-                      <input 
-                        type="date"
-                        value={manualBillData.check_in}
-                        onChange={(e) => setManualBillData({...manualBillData, check_in: e.target.value})}
-                        className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Check-out</label>
-                      <input 
-                        type="date"
-                        value={manualBillData.check_out}
-                        onChange={(e) => setManualBillData({...manualBillData, check_out: e.target.value})}
-                        className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">{hotelSettings.additional_charge_name || 'Additional Charge'}</label>
                       <input 
                         type="number"
@@ -4155,7 +4198,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true);
+                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, new Date(manualBillData.bill_date));
                         alert("Manual Normal Bill generated and saved to All Bills history.");
                         setShowManualBill(false);
                       }}
@@ -4185,7 +4228,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true);
+                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, new Date(manualBillData.bill_date));
                         alert("Manual GST Bill generated and saved to All Bills history.");
                         setShowManualBill(false);
                       }}
