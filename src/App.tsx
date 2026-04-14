@@ -62,9 +62,17 @@ const getBase64ImageFromURL = (url: string): Promise<string> => {
   });
 };
 
-const formatDateDDMMYYYY = (dateStr: string | Date) => {
-  if (!dateStr) return '';
-  const date = new Date(dateStr);
+const formatDateDDMMYYYY = (dateInput: string | Date) => {
+  if (!dateInput) return '';
+  
+  // If it's a YYYY-MM-DD string, parse it directly to avoid timezone shifts
+  if (typeof dateInput === 'string' && dateInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    const [year, month, day] = dateInput.split('-');
+    return `${day}-${month}-${year}`;
+  }
+  
+  // For Date objects or other string formats (like ISO strings with time)
+  const date = new Date(dateInput);
   const day = String(date.getDate()).padStart(2, '0');
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const year = date.getFullYear();
@@ -457,7 +465,7 @@ export default function App() {
     }
   };
 
-  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[], invoiceId: string, customDate?: Date) => {
+  const saveBillToDb = async (booking: Booking, billType: 'GST' | 'Normal', totalAmount: number, basePrice: number, gstAmount: number, dsdaCharge: number, groupBookings: Booking[], invoiceId: string, customDate?: string | Date) => {
     try {
       const billData = {
         invoice_id: invoiceId,
@@ -479,7 +487,7 @@ export default function App() {
         dsda_charge: dsdaCharge,
         total_amount: totalAmount,
         bill_type: billType,
-        created_at: customDate ? customDate.toISOString() : undefined
+        created_at: customDate ? (typeof customDate === 'string' ? new Date(customDate).toISOString() : customDate.toISOString()) : undefined
       };
 
       await fetch('/api/bills', {
@@ -1118,14 +1126,24 @@ export default function App() {
     doc.save(`Receipt-${lastBookingDetails.bookingId}.pdf`);
   };
 
-  const getInvoiceId = (booking: any, customDate?: Date) => {
+  const getInvoiceId = (booking: any, customDate?: string | Date) => {
     if (booking.invoice_id) return booking.invoice_id; // Use existing if available
     
-    const date = customDate || new Date(booking.check_in);
-    const year = date.getFullYear();
-    const month = date.getMonth() + 1;
-    const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-    const monthCode = monthNames[date.getMonth()];
+    let year, month, monthCode;
+    
+    if (typeof customDate === 'string' && customDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      const parts = customDate.split('-');
+      year = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10);
+      const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+      monthCode = monthNames[month - 1];
+    } else {
+      const date = customDate ? new Date(customDate) : new Date(booking.check_in);
+      year = date.getFullYear();
+      month = date.getMonth() + 1;
+      const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+      monthCode = monthNames[date.getMonth()];
+    }
     
     let finYear = "";
     if (month >= 4) {
@@ -1151,7 +1169,7 @@ export default function App() {
     return `${monthPrefix}${nextSeq}`;
   };
 
-  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: Date) => {
+  const downloadReceiptForBooking = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: string | Date) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
@@ -1432,8 +1450,8 @@ export default function App() {
 
     // Iterate through each day of the month
     for (let day = 1; day <= daysInMonth; day++) {
-      const currentDate = new Date(year, month - 1, day);
-      const currentDateStr = currentDate.toISOString().split('T')[0];
+      // Use zero-padded strings to avoid timezone shift issues
+      const currentDateStr = `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
       const displayDate = `${day}-${new Date(year, month - 1).toLocaleString('default', { month: 'short' })}-${year.toString().slice(-2)}`;
       
       // Add Day Header
@@ -1459,12 +1477,15 @@ export default function App() {
             const isRoomInBill = roomsInBill.some((r: any) => r.room_number === room.room_number);
             
             if (isRoomInBill) {
-              const checkInDate = new Date(b.check_in);
-              const checkOutDate = new Date(b.check_out);
+              const checkInStr = b.check_in; // "YYYY-MM-DD"
+              const checkOutStr = b.check_out; // "YYYY-MM-DD"
               
-              // A stay is active from checkInDate up to (but not including) checkOutDate
-              // Example: In 1st, Out 4th -> Active on 1st, 2nd, 3rd (3 nights)
-              if (currentDate >= checkInDate && currentDate < checkOutDate) {
+              // A stay is active from checkInStr up to (but not including) checkOutStr
+              // If checkInStr === checkOutStr (day use), it's active on that day only
+              const isActive = (checkInStr === checkOutStr && currentDateStr === checkInStr) || 
+                               (currentDateStr >= checkInStr && currentDateStr < checkOutStr);
+              
+              if (isActive) {
                 const nights = calculateNights(b.check_in, b.check_out);
                 const roomCount = roomsInBill.length;
                 
@@ -1541,7 +1562,7 @@ export default function App() {
     XLSX.writeFile(workbook, `Monthly_Report_${monthName}_${year}.xlsx`);
   };
 
-  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: Date) => {
+  const generateGSTBillPDF = async (booking: Booking, includeAdditionalCharges: boolean = true, customGroupBookings?: Booking[], skipSave: boolean = false, skipDownload: boolean = false, customDate?: string | Date) => {
     let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
     if (groupBookings.length === 0) {
       groupBookings = [booking];
@@ -2027,8 +2048,14 @@ Thank you for choosing ${hotelSettings.hotel_name}!
           <div className="max-w-7xl mx-auto flex items-center gap-3 text-rose-700">
             <Info size={18} />
             <p className="text-sm font-medium">
-              Database connection issue: {dbError}. 
-              Please check your Supabase credentials in Settings &gt; Secrets.
+              {(() => {
+                try {
+                  const parsed = JSON.parse(dbError);
+                  return parsed.error || dbError;
+                } catch {
+                  return dbError;
+                }
+              })()}
             </p>
           </div>
         </div>
@@ -3002,7 +3029,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                     </button>
                                     <button 
                                       onClick={() => {
-                                        downloadReceiptForBooking(booking, true, undefined, false, true, new Date(billDate));
+                                        downloadReceiptForBooking(booking, true, undefined, false, true, billDate);
                                         alert("Bill generated and saved to All Bills history.");
                                       }}
                                       className="text-[10px] text-emerald-600 font-bold hover:underline text-left px-3 flex items-center gap-1"
@@ -3400,7 +3427,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                 <div className="flex items-center gap-3">
                                   <button 
                                     onClick={() => {
-                                      downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true, new Date(billDate));
+                                      downloadReceiptForBooking(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true, billDate);
                                       alert("Normal Bill generated and saved to All Bills history.");
                                     }}
                                     className="px-4 py-2 bg-black/5 text-black/60 rounded-lg text-xs font-bold hover:bg-black/10 transition-all flex items-center gap-2"
@@ -3410,7 +3437,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                   </button>
                                   <button 
                                     onClick={() => {
-                                      generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true, new Date(billDate));
+                                      generateGSTBillPDF(booking, includeDsdaMap[booking.id] ?? true, undefined, false, true, billDate);
                                       alert("GST Bill generated and saved to All Bills history.");
                                     }}
                                     className="px-4 py-2 bg-primary-light text-primary-text rounded-lg text-xs font-bold hover:bg-primary-light/80 transition-all flex items-center gap-2"
@@ -4289,7 +4316,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, new Date(manualBillData.bill_date));
+                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, manualBillData.bill_date);
                         alert("Manual Normal Bill generated and saved to All Bills history.");
                         setShowManualBill(false);
                       }}
@@ -4319,7 +4346,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, new Date(manualBillData.bill_date));
+                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, manualBillData.bill_date);
                         alert("Manual GST Bill generated and saved to All Bills history.");
                         setShowManualBill(false);
                       }}

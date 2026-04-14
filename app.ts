@@ -48,13 +48,20 @@ interface FirestoreErrorInfo {
 }
 
 function handleFirestoreError(error: any, operationType: OperationType, path: string | null) {
+  let errorMessage = error.message || String(error);
+  
+  // Handle Cloudflare/Supabase 502 Bad Gateway HTML responses
+  if (errorMessage.includes('502 Bad Gateway') || errorMessage.includes('cloudflare')) {
+    errorMessage = "502 Bad Gateway: The database server is currently unreachable. Your Supabase project might be paused, or the SUPABASE_URL is incorrect. Please check your Supabase dashboard.";
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error.message || String(error),
+    error: errorMessage,
     authInfo: null, // No Firebase Auth in this Supabase setup
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error('Database Error: ', JSON.stringify(errInfo));
   return errInfo;
 }
 
