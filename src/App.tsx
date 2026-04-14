@@ -1443,6 +1443,132 @@ export default function App() {
     }
   };
 
+  const generateTaxExcelReport = (monthStr: string) => {
+    const [year, month] = monthStr.split('-').map(Number);
+    const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' }).toUpperCase();
+    
+    // Filter bills for the selected month based on bill date (created_at) or check_in
+    const filteredBills = allBills.filter(b => {
+      const dateToUse = b.created_at ? b.created_at.split('T')[0] : b.check_in;
+      return dateToUse.startsWith(monthStr);
+    });
+
+    const aoaData: any[][] = [];
+    
+    // Header Row
+    aoaData.push([
+      "Invoice Date", 
+      "Invoice No", 
+      "Guest Name", 
+      "Guest GSTIN", 
+      "Bill Type",
+      "Check In",
+      "Check Out",
+      "Rooms",
+      "Taxable Value (Base Price)", 
+      "CGST", 
+      "SGST", 
+      "IGST", 
+      "Additional Charges",
+      "Total Invoice Value"
+    ]);
+
+    let totalBase = 0;
+    let totalCgst = 0;
+    let totalSgst = 0;
+    let totalIgst = 0;
+    let totalAdditional = 0;
+    let totalGrand = 0;
+
+    filteredBills.forEach(bill => {
+      const dateToUse = bill.created_at ? bill.created_at.split('T')[0] : bill.check_in;
+      const guestGST = bill.guest_gst || '';
+      const isInterState = guestGST && guestGST.substring(0, 2) !== (hotelSettings.state_code || '19');
+      
+      let cgst = 0;
+      let sgst = 0;
+      let igst = 0;
+
+      if (bill.bill_type === 'GST') {
+        if (isInterState) {
+          igst = bill.gst_amount;
+        } else {
+          cgst = bill.gst_amount / 2;
+          sgst = bill.gst_amount / 2;
+        }
+      }
+
+      let roomsStr = "";
+      try {
+        const roomsData = JSON.parse(bill.rooms_data);
+        roomsStr = roomsData.map((r: any) => r.room_number).join(", ");
+      } catch (e) {}
+
+      totalBase += bill.base_price;
+      totalCgst += cgst;
+      totalSgst += sgst;
+      totalIgst += igst;
+      totalAdditional += bill.dsda_charge;
+      totalGrand += bill.total_amount;
+
+      aoaData.push([
+        formatDateDDMMYYYY(dateToUse),
+        bill.invoice_id,
+        bill.guest_name,
+        guestGST,
+        bill.bill_type,
+        formatDateDDMMYYYY(bill.check_in),
+        formatDateDDMMYYYY(bill.check_out),
+        roomsStr,
+        bill.base_price.toFixed(2),
+        cgst.toFixed(2),
+        sgst.toFixed(2),
+        igst.toFixed(2),
+        bill.dsda_charge.toFixed(2),
+        bill.total_amount.toFixed(2)
+      ]);
+    });
+
+    // Empty row
+    aoaData.push([]);
+    
+    // Totals row
+    aoaData.push([
+      "TOTALS", "", "", "", "", "", "", "",
+      totalBase.toFixed(2),
+      totalCgst.toFixed(2),
+      totalSgst.toFixed(2),
+      totalIgst.toFixed(2),
+      totalAdditional.toFixed(2),
+      totalGrand.toFixed(2)
+    ]);
+
+    const ws = XLSX.utils.aoa_to_sheet(aoaData);
+    
+    // Auto-size columns
+    const colWidths = [
+      { wch: 12 }, // Date
+      { wch: 20 }, // Invoice No
+      { wch: 25 }, // Guest Name
+      { wch: 18 }, // GSTIN
+      { wch: 10 }, // Bill Type
+      { wch: 12 }, // Check In
+      { wch: 12 }, // Check Out
+      { wch: 15 }, // Rooms
+      { wch: 22 }, // Taxable
+      { wch: 12 }, // CGST
+      { wch: 12 }, // SGST
+      { wch: 12 }, // IGST
+      { wch: 18 }, // Additional
+      { wch: 20 }, // Total
+    ];
+    ws['!cols'] = colWidths;
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, `Tax_Report_${monthName}`);
+    XLSX.writeFile(wb, `Tax_Report_${monthName}_${year}.xlsx`);
+  };
+
   const generateMonthlyExcelReport = (monthStr: string) => {
     const [year, month] = monthStr.split('-').map(Number);
     const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' }).toUpperCase();
@@ -3516,7 +3642,15 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                       className="h-12 px-6 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/20"
                     >
                       <FileText size={18} />
-                      Excel Report
+                      Occupancy Excel
+                    </button>
+
+                    <button 
+                      onClick={() => generateTaxExcelReport(selectedBillMonth)}
+                      className="h-12 px-6 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all flex items-center gap-2 shadow-lg shadow-indigo-600/20"
+                    >
+                      <FileText size={18} />
+                      Tax/GST Excel
                     </button>
 
                     <button 
