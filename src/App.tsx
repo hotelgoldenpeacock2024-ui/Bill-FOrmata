@@ -65,18 +65,28 @@ const getBase64ImageFromURL = (url: string): Promise<string> => {
 const formatDateDDMMYYYY = (dateInput: string | Date) => {
   if (!dateInput) return '';
   
-  // If it's a YYYY-MM-DD string, parse it directly to avoid timezone shifts
-  if (typeof dateInput === 'string' && dateInput.match(/^\d{4}-\d{2}-\d{2}$/)) {
-    const [year, month, day] = dateInput.split('-');
-    return `${day}-${month}-${year}`;
+  // If it's a string, extract the YYYY-MM-DD part to avoid timezone shifts
+  if (typeof dateInput === 'string') {
+    const datePart = dateInput.split('T')[0];
+    if (datePart.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      const [year, month, day] = datePart.split('-');
+      return `${day}-${month}-${year}`;
+    }
   }
   
-  // For Date objects or other string formats (like ISO strings with time)
+  // For Date objects
   const date = new Date(dateInput);
   const day = String(date.getDate()).padStart(2, '0');
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const year = date.getFullYear();
   return `${day}-${month}-${year}`;
+};
+
+const getLocalDateString = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 interface Room {
@@ -191,7 +201,7 @@ export default function App() {
   const [filterStatus, setFilterStatus] = useState<'all' | 'confirmed' | 'cancelled'>('all');
   const [selectedRoomIds, setSelectedRoomIds] = useState<number[]>([]);
   const [customPrices, setCustomPrices] = useState<Record<number, number>>({});
-  const [selectedBillMonth, setSelectedBillMonth] = useState<string>(new Date().toISOString().slice(0, 7));
+  const [selectedBillMonth, setSelectedBillMonth] = useState<string>(getLocalDateString().slice(0, 7));
   const [showManualBill, setShowManualBill] = useState(false);
   const [manualBillData, setManualBillData] = useState({
     guest_name: '',
@@ -200,13 +210,13 @@ export default function App() {
     guest_address: '',
     guest_gst: '',
     rooms: [{ room_number: '', room_type: '', room_price: 0 }],
-    check_in: new Date().toISOString().split('T')[0],
-    check_out: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-    bill_date: new Date().toISOString().split('T')[0],
+    check_in: getLocalDateString(),
+    check_out: getLocalDateString(new Date(Date.now() + 86400000)),
+    bill_date: getLocalDateString(),
     dsda_charge: 0,
     include_dsda: true
   });
-  const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
+  const [billDate, setBillDate] = useState(getLocalDateString());
   const [fetchingGST, setFetchingGST] = useState(false);
   const [fetchingAI, setFetchingAI] = useState(false);
   const [gstConfig, setGstConfig] = useState<{configured: boolean, providers: any} | null>(null);
@@ -366,7 +376,7 @@ export default function App() {
   };
 
   const [showReview, setShowReview] = useState(false);
-  const [dailyBookingsDate, setDailyBookingsDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dailyBookingsDate, setDailyBookingsDate] = useState(getLocalDateString());
   const [ws, setWs] = useState<WebSocket | null>(null);
   const [isLive, setIsLive] = useState(false);
   const [isNetlify, setIsNetlify] = useState(false);
@@ -529,9 +539,9 @@ export default function App() {
     }));
 
     if (bill.bill_type === 'GST') {
-      await generateGSTBillPDF(fakeBooking, true, fakeGroupBookings, true);
+      await generateGSTBillPDF(fakeBooking, true, fakeGroupBookings, true, false, bill.created_at);
     } else {
-      await downloadReceiptForBooking(fakeBooking, true, fakeGroupBookings, true);
+      await downloadReceiptForBooking(fakeBooking, true, fakeGroupBookings, true, false, bill.created_at);
     }
   };
 
@@ -1131,8 +1141,10 @@ export default function App() {
     
     let year, month, monthCode;
     
-    if (typeof customDate === 'string' && customDate.match(/^\d{4}-\d{2}-\d{2}$/)) {
-      const parts = customDate.split('-');
+    let dateStr = typeof customDate === 'string' ? customDate.split('T')[0] : '';
+    
+    if (dateStr && dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+      const parts = dateStr.split('-');
       year = parseInt(parts[0], 10);
       month = parseInt(parts[1], 10);
       const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
