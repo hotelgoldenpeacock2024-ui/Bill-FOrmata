@@ -1136,6 +1136,152 @@ export default function App() {
     doc.save(`Receipt-${lastBookingDetails.bookingId}.pdf`);
   };
 
+  const downloadBookingConfirmationForBooking = async (booking: Booking, customGroupBookings?: Booking[]) => {
+    let groupBookings = customGroupBookings || allBookings.filter(b => b.booking_id === booking.booking_id);
+    if (groupBookings.length === 0) {
+      groupBookings = [booking];
+    }
+    
+    const doc = new jsPDF();
+    const dsdaCharge = booking.dsda_charge || 0;
+    const advancePayment = booking.advance_payment || 0;
+    const nights = calculateNights(booking.check_in, booking.check_out);
+    
+    const themeColors: Record<string, string> = {
+      emerald: '#059669', indigo: '#4f46e5', rose: '#e11d48', amber: '#d97706', slate: '#475569'
+    };
+    const primaryColor = themeColors[hotelSettings.theme] || '#059669';
+
+    // Header
+    doc.setFillColor(primaryColor);
+    doc.rect(0, 0, 210, 40, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(24);
+    doc.setFont('helvetica', 'bold');
+    doc.text(hotelSettings.hotel_name, 20, 20);
+    
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.text(hotelSettings.hotel_address, 20, 28);
+    doc.text(hotelSettings.contact_info, 20, 33);
+
+    if (hotelSettings.logo_url) {
+      try {
+        const logoBase64 = await getBase64ImageFromURL(hotelSettings.logo_url);
+        doc.addImage(logoBase64, 'PNG', 170, 5, 25, 25);
+      } catch (e) {
+        console.error("Error adding logo to PDF", e);
+      }
+    }
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text('BOOKING CONFIRMATION', 150, 35);
+
+    // Booking ID & Date
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Booking ID:', 20, 55);
+    doc.setFont('helvetica', 'normal');
+    doc.text(booking.booking_id || 'N/A', 50, 55);
+    
+    doc.setFont('helvetica', 'bold');
+    doc.text('Date:', 140, 55);
+    doc.setFont('helvetica', 'normal');
+    doc.text(formatDateDDMMYYYY(new Date()), 165, 55);
+
+    // Guest Details
+    doc.setDrawColor(200, 200, 200);
+    doc.line(20, 65, 190, 65);
+    
+    doc.setFont('helvetica', 'bold');
+    doc.text('GUEST DETAILS', 20, 75);
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Name: ${booking.guest_name}`, 20, 85);
+    doc.text(`Email: ${(booking as any).guest_email || 'N/A'}`, 20, 92);
+    doc.text(`Phone: ${booking.guest_phone || 'N/A'}`, 20, 99);
+    doc.text(`Occupancy: ${booking.adults || 1} Adults, ${booking.children || 0} Children`, 120, 85);
+
+    // Stay Details
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    doc.text('STAY DETAILS', 20, 115);
+    
+    autoTable(doc, {
+      startY: 120,
+      head: [['Check-in', 'Check-out', 'Plan']],
+      body: [[
+        `${formatDateDDMMYYYY(booking.check_in)} (10:30 AM)`,
+        `${formatDateDDMMYYYY(booking.check_out)} (09:30 AM)`,
+        booking.plan || 'Only Room'
+      ]],
+      headStyles: { fillColor: primaryColor }
+    });
+
+    // Room Details
+    const roomRows = groupBookings.map(r => {
+      const price = r.room_price;
+      return [
+        (r as any).room_type || 'Selected Room',
+        nights.toString(),
+        `Rs. ${price}`,
+        `Rs. ${price * nights}`
+      ];
+    });
+
+    autoTable(doc, {
+      startY: (doc as any).lastAutoTable.finalY + 15,
+      head: [['Room Type', 'Days', 'Price', 'Total']],
+      body: roomRows,
+      headStyles: { fillColor: primaryColor }
+    });
+
+    // Summary
+    const finalY = (doc as any).lastAutoTable.finalY + 15;
+    const subtotal = groupBookings.reduce((acc, curr) => acc + (curr.room_price * nights), 0);
+    const total = subtotal + dsdaCharge;
+    const balance = total - advancePayment;
+
+    doc.setFontSize(10);
+    doc.text('Subtotal:', 140, finalY);
+    doc.text(`Rs. ${subtotal.toFixed(2)}`, 175, finalY);
+    
+    if (dsdaCharge > 0) {
+      doc.text(`${hotelSettings.additional_charge_name || 'Additional Charge'}:`, 140, finalY + 7);
+      doc.text(`Rs. ${dsdaCharge.toFixed(2)}`, 175, finalY + 7);
+    }
+
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(primaryColor);
+    doc.text('Total Amount:', 140, finalY + 18);
+    doc.text(`Rs. ${total.toFixed(2)}`, 175, finalY + 18);
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(0, 0, 0);
+    doc.text('Advance Paid:', 140, finalY + 28);
+    doc.text(`Rs. ${advancePayment.toFixed(2)}`, 175, finalY + 28);
+
+    doc.setFont('helvetica', 'bold');
+    doc.text('Balance Due:', 140, finalY + 35);
+    doc.text(`Rs. ${balance.toFixed(2)}`, 175, finalY + 35);
+
+    // Footer
+    doc.setFontSize(10);
+    doc.setTextColor(150, 150, 150);
+    doc.setFont('helvetica', 'italic');
+    doc.text(`Thank you for choosing ${hotelSettings.hotel_name}!`, 105, 275, { align: 'center' });
+
+    doc.setFontSize(8);
+    doc.text('This is a computer generated document. Signature not required.', 105, 282, { align: 'center' });
+    doc.text('Default Check-out time is 09:30 AM.', 105, 287, { align: 'center' });
+
+    doc.save(`Confirmation-${booking.booking_id || booking.id}.pdf`);
+  };
+
   const getInvoiceId = (booking: any, customDate?: string | Date) => {
     if (booking.invoice_id) return booking.invoice_id; // Use existing if available
     
@@ -3167,6 +3313,14 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                                     </button>
                                     <button 
                                       onClick={() => {
+                                        downloadBookingConfirmationForBooking(booking);
+                                      }}
+                                      className="text-[10px] text-indigo-600 font-bold hover:underline text-left px-3 flex items-center gap-1"
+                                    >
+                                      <Printer size={10} /> Print Confirmation
+                                    </button>
+                                    <button 
+                                      onClick={() => {
                                         downloadReceiptForBooking(booking, true, undefined, false, true, billDate);
                                         alert("Bill generated and saved to All Bills history.");
                                       }}
@@ -3286,6 +3440,21 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                               className="px-3 py-2 bg-primary-light text-primary-text rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-primary-light/80 transition-all"
                             >
                               Edit Details
+                            </button>
+                            <button 
+                              onClick={() => downloadBookingConfirmationForBooking(booking)}
+                              className="px-3 py-2 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-indigo-100 transition-all"
+                            >
+                              Confirmation
+                            </button>
+                            <button 
+                              onClick={() => {
+                                downloadReceiptForBooking(booking, true, undefined, false, true, billDate);
+                                alert("Bill generated and saved to All Bills history.");
+                              }}
+                              className="px-3 py-2 bg-emerald-50 text-emerald-600 rounded-lg text-[10px] font-bold uppercase tracking-wider hover:bg-emerald-100 transition-all"
+                            >
+                              Generate Bill
                             </button>
                           </div>
                         )}
