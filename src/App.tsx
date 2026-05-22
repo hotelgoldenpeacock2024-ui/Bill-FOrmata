@@ -35,7 +35,8 @@ import {
   Sparkles,
   RefreshCw,
   TrendingUp,
-  ArrowUpRight
+  ArrowUpRight,
+  Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -125,6 +126,8 @@ interface Booking {
   guest_gst?: string;
   guest_address?: string;
   is_billed?: boolean;
+  company_name?: string;
+  company_address?: string;
 }
 
 interface Bill {
@@ -145,6 +148,8 @@ interface Bill {
   total_amount: number;
   bill_type: 'GST' | 'Normal';
   created_at: string;
+  company_name?: string;
+  company_address?: string;
 }
 
 interface AvailabilityResult {
@@ -209,6 +214,9 @@ export default function App() {
     guest_email: '',
     guest_address: '',
     guest_gst: '',
+    company_name: '',
+    company_address: '',
+    show_company: false,
     rooms: [{ room_number: '', room_type: '', room_price: 0 }],
     check_in: getLocalDateString(),
     check_out: getLocalDateString(new Date(Date.now() + 86400000)),
@@ -222,6 +230,21 @@ export default function App() {
   const [gstConfig, setGstConfig] = useState<{configured: boolean, providers: any} | null>(null);
   const [includeDsdaMap, setIncludeDsdaMap] = useState<Record<string, boolean>>({});
   const [isRetrieving, setIsRetrieving] = useState(false);
+  const [connectionInfo, setConnectionInfo] = useState<any>(null);
+  const [checkingConnection, setCheckingConnection] = useState(false);
+
+  const runConnectivityTest = async () => {
+    setCheckingConnection(true);
+    try {
+      const res = await fetch('/api/health');
+      const data = await res.json();
+      setConnectionInfo(data);
+    } catch (err) {
+      setConnectionInfo({ error: "Failed to reach health endpoint. The server might be down or restarting." });
+    } finally {
+      setCheckingConnection(false);
+    }
+  };
 
   const retrieveDeletedBookings = async () => {
     setIsRetrieving(true);
@@ -490,7 +513,9 @@ export default function App() {
         rooms_data: JSON.stringify(groupBookings.map(b => ({
           room_number: b.room_number,
           room_type: b.room_type,
-          room_price: b.room_price
+          room_price: b.room_price,
+          company_name: b.company_name,
+          company_address: b.company_address
         }))),
         base_price: basePrice,
         gst_amount: gstAmount,
@@ -527,6 +552,8 @@ export default function App() {
       room_price: rooms[0]?.room_price || 0,
       room_number: rooms[0]?.room_number || '',
       room_type: rooms[0]?.room_type || '',
+      company_name: rooms[0]?.company_name || bill.company_name || '',
+      company_address: rooms[0]?.company_address || bill.company_address || '',
       advance_payment: 0
     };
 
@@ -535,7 +562,9 @@ export default function App() {
       id: Date.now() + idx,
       room_number: r.room_number,
       room_type: r.room_type,
-      room_price: r.room_price
+      room_price: r.room_price,
+      company_name: r.company_name || '',
+      company_address: r.company_address || ''
     }));
 
     if (bill.bill_type === 'GST') {
@@ -1410,14 +1439,33 @@ export default function App() {
       doc.text('GUEST DETAILS:', 20, 65);
       doc.text('BOOKING DETAILS:', 120, 65);
 
+      let guestY = 71;
       doc.setTextColor(0, 0, 0);
       doc.setFontSize(10);
       doc.setFont('helvetica', 'bold');
-      doc.text(booking.guest_name, 20, 71);
+      doc.text(booking.guest_name, 20, guestY);
       doc.setFont('helvetica', 'normal');
-      doc.text(`Email: ${booking.guest_email}`, 20, 76);
-      doc.text(`Phone: ${booking.guest_phone}`, 20, 81);
-      doc.text(`Occupancy: ${booking.adults} Adults, ${booking.children} Children`, 20, 86);
+
+      const compName = booking.company_name;
+      const compAddr = booking.company_address;
+
+      if (compName) {
+        guestY += 5;
+        doc.setFont('helvetica', 'bold');
+        doc.text(`Company: ${compName}`, 20, guestY);
+        doc.setFont('helvetica', 'normal');
+      }
+      if (compAddr) {
+        guestY += 5;
+        doc.text(`Co. Address: ${compAddr}`, 20, guestY);
+      }
+
+      guestY += 5;
+      doc.text(`Email: ${booking.guest_email}`, 20, guestY);
+      guestY += 5;
+      doc.text(`Phone: ${booking.guest_phone}`, 20, guestY);
+      guestY += 5;
+      doc.text(`Occupancy: ${booking.adults} Adults, ${booking.children} Children`, 20, guestY);
 
       doc.text(`Invoice No: ${invoiceId}`, 120, 71);
       doc.text(`Date: ${formatDateDDMMYYYY(customDate || new Date())}`, 120, 76);
@@ -1434,8 +1482,12 @@ export default function App() {
         ];
       });
 
+      let startTableY = 95;
+      if (compName) startTableY += 5;
+      if (compAddr) startTableY += 5;
+
       autoTable(doc, {
-        startY: 95,
+        startY: startTableY,
         head: [['Room Type', 'Nights', 'Price', 'Total']],
         body: roomRows,
         headStyles: { 
@@ -1960,14 +2012,33 @@ export default function App() {
     doc.text('BILL TO:', 20, 65);
     doc.text('INVOICE DETAILS:', 120, 65);
 
+    let guestY = 71;
     doc.setTextColor(0, 0, 0);
     doc.setFontSize(10);
     doc.setFont('helvetica', 'bold');
-    doc.text(booking.guest_name, 20, 71);
+    doc.text(booking.guest_name, 20, guestY);
     doc.setFont('helvetica', 'normal');
-    doc.text(`Address: ${(booking as any).guest_address || 'N/A'}`, 20, 76);
-    doc.text(`GSTIN: ${guestGST || 'N/A'}`, 20, 81);
-    doc.text(`Phone: ${booking.guest_phone || 'N/A'}`, 20, 86);
+
+    const compName = booking.company_name;
+    const compAddr = booking.company_address;
+
+    if (compName) {
+      guestY += 5;
+      doc.setFont('helvetica', 'bold');
+      doc.text(`Company: ${compName}`, 20, guestY);
+      doc.setFont('helvetica', 'normal');
+    }
+    if (compAddr) {
+      guestY += 5;
+      doc.text(`Co. Address: ${compAddr}`, 20, guestY);
+    }
+
+    guestY += 5;
+    doc.text(`Address: ${(booking as any).guest_address || 'N/A'}`, 20, guestY);
+    guestY += 5;
+    doc.text(`GSTIN: ${guestGST || 'N/A'}`, 20, guestY);
+    guestY += 5;
+    doc.text(`Phone: ${booking.guest_phone || 'N/A'}`, 20, guestY);
 
     doc.text(`Invoice No: ${invoiceId}`, 120, 71);
     doc.text(`Date: ${formatDateDDMMYYYY(customDate || new Date())}`, 120, 76);
@@ -1980,8 +2051,12 @@ export default function App() {
       tableBody.push([hotelSettings.additional_charge_name || 'Additional Charge', '9963', '1', `Rs. ${additionalCharge}`, `Rs. ${additionalCharge}`]);
     }
 
+    let startTableY = 95;
+    if (compName) startTableY += 5;
+    if (compAddr) startTableY += 5;
+
     autoTable(doc, {
-      startY: 95,
+      startY: startTableY,
       head: [['Description', 'SAC/HSN', 'Qty/Days', 'Rate', 'Amount']],
       body: tableBody,
       headStyles: { 
@@ -2335,7 +2410,16 @@ Thank you for choosing ${hotelSettings.hotel_name}!
               {(() => {
                 try {
                   const parsed = JSON.parse(dbError);
-                  return parsed.error || dbError;
+                  return (
+                    <span className="flex flex-col gap-0.5">
+                      <span>{parsed.error || dbError}</span>
+                      {parsed.diagnostic && (
+                        <span className="text-xs opacity-80 mt-1 whitespace-pre-wrap block border-t border-rose-200/50 pt-1">
+                          {parsed.diagnostic}
+                        </span>
+                      )}
+                    </span>
+                  );
                 } catch {
                   return dbError;
                 }
@@ -4144,10 +4228,60 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </div>
                     <div className="p-6 bg-primary-light rounded-2xl border border-primary-light">
                       <h4 className="font-bold text-primary-text mb-2">Database Status</h4>
-                      <p className="text-sm text-primary-text/70 leading-relaxed">
-                        Your hotel management system is connected to a Supabase database. 
-                        All data is synchronized in real-time across all connected devices.
-                      </p>
+                      <div className="space-y-4">
+                        <p className="text-sm text-primary-text/70 leading-relaxed">
+                          Your hotel management system is connected to a Supabase database. 
+                          All data is synchronized in real-time across all connected devices.
+                        </p>
+                        
+                        <div className="pt-2">
+                          <button
+                            onClick={runConnectivityTest}
+                            disabled={checkingConnection}
+                            className="w-full py-2 px-4 bg-white/50 hover:bg-white/80 text-primary-text text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-2 border border-primary/10"
+                          >
+                            <Activity size={14} className={checkingConnection ? 'animate-pulse' : ''} />
+                            {checkingConnection ? 'Testing...' : 'Test Database Connection'}
+                          </button>
+                        </div>
+
+                        {connectionInfo && (
+                          <div className={`mt-3 p-3 rounded-xl border text-[10px] space-y-1 ${
+                            connectionInfo.error || connectionInfo.supabaseConnection?.includes('Failed') 
+                              ? 'bg-rose-50 border-rose-100 text-rose-700' 
+                              : 'bg-emerald-50 border-emerald-100 text-emerald-700'
+                          }`}>
+                            <div className="flex justify-between">
+                              <span className="font-bold uppercase opacity-50">Status:</span>
+                              <span className="font-mono">{connectionInfo.status || 'Error'}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="font-bold uppercase opacity-50">Supabase Config:</span>
+                              <span className="font-mono">{connectionInfo.supabaseConfigured ? 'Valid' : 'Missing'}</span>
+                            </div>
+                            <div className="flex justify-between items-start">
+                              <span className="font-bold uppercase opacity-50">Connection:</span>
+                              <span className="font-mono text-right max-w-[150px] overflow-hidden text-ellipsis">{connectionInfo.supabaseConnection || 'Unknown'}</span>
+                            </div>
+                            {connectionInfo.supabaseUrlMasked && (
+                              <div className="flex justify-between">
+                                <span className="font-bold uppercase opacity-50">Target URL:</span>
+                                <span className="font-mono">{connectionInfo.supabaseUrlMasked}</span>
+                              </div>
+                            )}
+                            {connectionInfo.error && (
+                              <div className="mt-2 p-2 bg-rose-100 rounded text-rose-900 font-medium">
+                                {connectionInfo.error}
+                              </div>
+                            )}
+                            {!connectionInfo.error && connectionInfo.supabaseConnection?.includes('Failed') && (
+                              <div className="mt-2 p-2 bg-rose-100 rounded text-rose-900">
+                                <strong>Connectivity Failed.</strong> This usually means your Supabase project is paused or the URL is incorrect.
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -4447,6 +4581,47 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     />
                   </div>
 
+                  {/* Corporate/Company Details Option */}
+                  <div className="p-4 rounded-2xl bg-black/5 border border-black/5 space-y-4">
+                    <div className="flex items-center gap-3">
+                      <input 
+                        type="checkbox"
+                        id="corporate_billing"
+                        checked={manualBillData.show_company}
+                        onChange={(e) => setManualBillData({...manualBillData, show_company: e.target.checked})}
+                        className="w-5 h-5 rounded border-black/10 text-primary focus:ring-primary"
+                      />
+                      <label htmlFor="corporate_billing" className="text-sm font-bold text-black/70 cursor-pointer flex items-center gap-1">
+                        Corporate / Company Billing Details (Optional)
+                      </label>
+                    </div>
+
+                    {manualBillData.show_company && (
+                      <div className="grid grid-cols-2 gap-4 pt-2 border-t border-black/5">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Company Name</label>
+                          <input 
+                            type="text"
+                            placeholder="e.g. Acme Corporation"
+                            value={manualBillData.company_name}
+                            onChange={(e) => setManualBillData({...manualBillData, company_name: e.target.value})}
+                            className="w-full h-12 px-4 rounded-xl bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Company Address</label>
+                          <input 
+                            type="text"
+                            placeholder="e.g. 101 Corporate Blvd, New Delhi"
+                            value={manualBillData.company_address}
+                            onChange={(e) => setManualBillData({...manualBillData, company_address: e.target.value})}
+                            className="w-full h-12 px-4 rounded-xl bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Phone Number</label>
@@ -4621,6 +4796,8 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           guest_email: manualBillData.guest_email,
                           guest_address: manualBillData.guest_address,
                           guest_gst: manualBillData.guest_gst,
+                          company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
+                          company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
                           room_number: room.room_number,
                           room_type: room.room_type,
                           room_price: room.room_price,
@@ -4651,6 +4828,8 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           guest_email: manualBillData.guest_email,
                           guest_address: manualBillData.guest_address,
                           guest_gst: manualBillData.guest_gst,
+                          company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
+                          company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
                           room_number: room.room_number,
                           room_type: room.room_type,
                           room_price: room.room_price,

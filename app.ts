@@ -10,15 +10,46 @@ let supabaseClient: any = null;
 
 function getSupabase() {
   if (!supabaseClient) {
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+    let supabaseUrl = process.env.SUPABASE_URL?.trim() || "";
+    let supabaseAnonKey = process.env.SUPABASE_ANON_KEY?.trim() || "";
+
+    // Clean up potential copy-paste errors
+    supabaseUrl = supabaseUrl.replace(/^['"]|['"]$/g, '');
+    supabaseAnonKey = supabaseAnonKey.replace(/^['"]|['"]$/g, '');
+    
+    // Remove trailing slashes or /rest/v1 suffixes
+    supabaseUrl = supabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
 
     if (!supabaseUrl || !supabaseAnonKey) {
       throw new Error("Supabase credentials missing. Please configure SUPABASE_URL and SUPABASE_ANON_KEY in Settings > Secrets.");
     }
 
+    // Check for placeholder values
+    if (supabaseUrl.includes('your-project-id') || supabaseUrl === 'MY_SUPABASE_URL') {
+      throw new Error("Invalid SUPABASE_URL. You are using a placeholder value. Please provide your actual Supabase URL from the Supabase Settings > API dashboard.");
+    }
+
+    // Validate URL format
+    if (!supabaseUrl.startsWith('https://')) {
+      throw new Error(`Invalid SUPABASE_URL format. It must start with https://. Current value starts with: ${supabaseUrl.substring(0, 8)}...`);
+    }
+    
+    if (!supabaseUrl.includes('.supabase.co') && !supabaseUrl.includes('localhost') && !supabaseUrl.includes('127.0.0.1')) {
+      console.warn("Warning: SUPABASE_URL does not seem to be a standard Supabase cloud URL.");
+    }
+
     try {
-      supabaseClient = createClient(supabaseUrl, supabaseAnonKey);
+      console.log(`Initializing Supabase client...`);
+      supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false
+        },
+        global: {
+          headers: { 'x-application-name': 'hotel-mgmt-system' }
+        }
+      });
     } catch (err: any) {
       throw new Error(`Failed to initialize Supabase client: ${err.message}`);
     }
@@ -45,25 +76,54 @@ interface FirestoreErrorInfo {
   operationType: OperationType;
   path: string | null;
   authInfo: any;
+  diagnostic?: string;
 }
 
 function handleFirestoreError(error: any, operationType: OperationType, path: string | null) {
   let errorMessage = error.message || String(error);
+  let diagnostic = "";
   
-  // Handle Cloudflare/Supabase 502 Bad Gateway HTML responses
-  if (errorMessage.includes('502 Bad Gateway') || errorMessage.includes('cloudflare')) {
-    errorMessage = "502 Bad Gateway: The database server is currently unreachable. Your Supabase project might be paused, or the SUPABASE_URL is incorrect. Please check your Supabase dashboard.";
+  // Handle fetch failed specifically
+    if (errorMessage === 'fetch failed' || errorMessage.includes('TypeError: fetch failed')) {
+      const errorWithCode = (error as any);
+      const causeCode = error.cause?.code || errorWithCode.code || "";
+      const causeMessage = error.cause?.message || causeCode || "No detailed cause";
+      
+      let specificFix = "";
+      if (causeCode === 'ENOTFOUND' || causeCode === 'EAI_AGAIN') {
+        specificFix = "\n- Specific Error: DNS Resolution Failed. Your SUPABASE_URL might be misspelled or the domain does not exist.";
+      } else if (causeCode === 'ECONNREFUSED') {
+        specificFix = "\n- Specific Error: Connection Refused. The server at your SUPABASE_URL is rejecting connections.";
+      } else if (causeCode === 'ETIMEDOUT') {
+        specificFix = "\n- Specific Error: Connection Timed Out. Network issue or server too slow.";
+      }
+  
+      diagnostic = `Connectivity Diagnostic: The server failed to connect to Supabase. Possible reasons:
+  1. Your Supabase project is PAUSED (Login to supabase.com and check).
+  2. SUPABASE_URL is incorrect or misspelled.
+  3. SUPABASE_ANON_KEY is incorrect.${specificFix}
+  Technical detail: ${causeMessage}`;
+      errorMessage = "Connection Failed: Could not reach Supabase database.";
+    }
+    
+    // Handle Cloudflare/Supabase 502 Bad Gateway HTML responses
+    if (errorMessage.includes('502 Bad Gateway') || errorMessage.includes('cloudflare')) {
+      errorMessage = "502 Bad Gateway: The database server is currently unreachable. Your Supabase project might be paused.";
+    }
+  
+    const errInfo: FirestoreErrorInfo = {
+      error: errorMessage,
+      authInfo: null, 
+      operationType,
+      path,
+      diagnostic: diagnostic || undefined
+    };
+    console.error('Database Error: ', JSON.stringify(errInfo));
+    if (error.cause) console.error('Error Cause: ', error.cause);
+    if ((error as any).code) console.error('Error Code: ', (error as any).code);
+    
+    return errInfo;
   }
-
-  const errInfo: FirestoreErrorInfo = {
-    error: errorMessage,
-    authInfo: null, // No Firebase Auth in this Supabase setup
-    operationType,
-    path
-  };
-  console.error('Database Error: ', JSON.stringify(errInfo));
-  return errInfo;
-}
 
 const apiRouter = express.Router();
 
@@ -76,12 +136,38 @@ export const setBroadcast = (fn: (data: any) => void) => {
   broadcast = fn;
 };
 
-// Health check
-apiRouter.get("/health", (req, res) => {
+// Health check with connectivity test
+apiRouter.get("/health", async (req, res) => {
   console.log("Health check requested");
+  let supabaseUrl = process.env.SUPABASE_URL?.trim() || "";
+  supabaseUrl = supabaseUrl.replace(/^['"]|['"]$/g, '');
+  supabaseUrl = supabaseUrl.replace(/\/rest\/v1\/?$/, '').replace(/\/$/, '');
+  
+  let connectionTest = "Not tested";
+  if (supabaseUrl) {
+    try {
+      // Try to ping the rest endpoint directly
+      const restUrl = `${supabaseUrl}/rest/v1/`;
+      const testRes = await axios.get(restUrl, { 
+        timeout: 5000,
+        headers: { 'apikey': process.env.SUPABASE_ANON_KEY || '' }
+      }).catch(e => e.response || e);
+      
+      if (testRes.status === 200 || testRes.status === 401) {
+        connectionTest = "Success (Resolvable)";
+      } else {
+        connectionTest = `Failed (Status: ${testRes.status || 'unknown'})`;
+      }
+    } catch (e: any) {
+      connectionTest = `Failed (Error: ${e.code || e.message})`;
+    }
+  }
+
   res.json({ 
     status: "ok", 
     supabaseConfigured: !!process.env.SUPABASE_URL && !!process.env.SUPABASE_ANON_KEY,
+    supabaseUrlMasked: supabaseUrl ? `${supabaseUrl.substring(0, 12)}...${supabaseUrl.substring(supabaseUrl.length - 5)}` : 'not configured',
+    supabaseConnection: connectionTest,
     env: process.env.NODE_ENV || 'development',
     isNetlify: !!process.env.NETLIFY
   });
