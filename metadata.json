@@ -1,5 +1,6 @@
 {
   "name": "Golden Peacock",
-  "description": "",
-  "requestFramePermissions": []
+  "description": "Hotel Golden Peacock booking and billing management system with AI Assistant for fast room viewings and automated bill generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

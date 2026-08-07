@@ -33,10 +33,15 @@ import {
   ShieldCheck,
   ExternalLink,
   Sparkles,
+  Bot,
+  Send,
+  MessageSquare,
   RefreshCw,
   TrendingUp,
   ArrowUpRight,
-  Activity
+  Activity,
+  Save,
+  HelpCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Type } from "@google/genai";
@@ -193,7 +198,291 @@ export default function App() {
     bookingId: string;
     bookedPrices: Record<number, number>;
   } | null>(null);
-  const [activeView, setActiveView] = useState<'availability' | 'bookings' | 'profiles' | 'settings' | 'inventory' | 'billing' | 'all_bills'>('availability');
+  const [activeView, setActiveView] = useState<'availability' | 'bookings' | 'profiles' | 'settings' | 'inventory' | 'billing' | 'all_bills' | 'ai_chatbot'>('availability');
+
+  // AI Assistant Chatbot State
+  const [aiMessages, setAiMessages] = useState<{
+    id: string;
+    sender: 'user' | 'ai';
+    text: string;
+    timestamp: string;
+    bookingDetails?: any;
+    billDetails?: any;
+    bookingsList?: any[];
+    roomsList?: any[];
+  }[]>([
+    {
+      id: 'welcome',
+      sender: 'ai',
+      text: "👋 Welcome! I am Hotel Golden Peacock's AI Booking & Auto-Billing Assistant.\n\nSimply share stay details (e.g. Guest Name, Check-in date, Check-out date, Room number/type, and Rate), and I will automatically generate the bill and save it into View Bookings!",
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    }
+  ]);
+  const [aiInputText, setAiInputText] = useState('');
+  
+  // Reminders Selection Tab State
+  const [activeRemindersTab, setActiveRemindersTab] = useState<'telegram' | 'whatsapp'>('whatsapp');
+  
+  // WhatsApp Reminders Configuration States
+  const [waPhone, setWaPhone] = useState(localStorage.getItem('wa_phone') || '8777264725');
+  const [waProvider, setWaProvider] = useState<'twilio' | 'meta'>((localStorage.getItem('wa_provider') as 'twilio' | 'meta') || 'meta');
+  
+  const [waTwilioSid, setWaTwilioSid] = useState(localStorage.getItem('wa_twilio_sid') || '');
+  const [waTwilioToken, setWaTwilioToken] = useState(localStorage.getItem('wa_twilio_token') || '');
+  const [waTwilioNumber, setWaTwilioNumber] = useState(localStorage.getItem('wa_twilio_number') || 'whatsapp:+14155238886');
+  
+  const [waMetaPhoneId, setWaMetaPhoneId] = useState(localStorage.getItem('wa_meta_phone_id') || '');
+  const [waMetaToken, setWaMetaToken] = useState(localStorage.getItem('wa_meta_token') || '');
+  
+  const [waSendingTest, setWaSendingTest] = useState(false);
+  const [waSendingDaily, setWaSendingDaily] = useState(false);
+  const [waStatusMessage, setWaStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleSaveWaSettings = () => {
+    localStorage.setItem('wa_phone', waPhone);
+    localStorage.setItem('wa_provider', waProvider);
+    localStorage.setItem('wa_twilio_sid', waTwilioSid);
+    localStorage.setItem('wa_twilio_token', waTwilioToken);
+    localStorage.setItem('wa_twilio_number', waTwilioNumber);
+    localStorage.setItem('wa_meta_phone_id', waMetaPhoneId);
+    localStorage.setItem('wa_meta_token', waMetaToken);
+    setWaStatusMessage({ type: 'success', text: 'WhatsApp configurations saved in browser local storage successfully!' });
+    setTimeout(() => setWaStatusMessage(null), 4000);
+  };
+
+  const handleTestWhatsApp = async () => {
+    setWaSendingTest(true);
+    setWaStatusMessage(null);
+    try {
+      const res = await fetch('/api/whatsapp/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: waPhone,
+          provider: waProvider,
+          twilioSid: waTwilioSid,
+          twilioToken: waTwilioToken,
+          twilioNumber: waTwilioNumber,
+          metaPhoneId: waMetaPhoneId,
+          metaToken: waMetaToken
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWaStatusMessage({ type: 'success', text: `Test connection successful! Welcome message sent to ${waPhone}.` });
+      } else {
+        let errorMsg = `Connection failed: ${data.error || 'Check details.'}`;
+        if (data.details) {
+          if (data.details.error && data.details.error.message) {
+            errorMsg += ` (Meta API: ${data.details.error.message})`;
+          } else if (data.details.message) {
+            errorMsg += ` (Details: ${data.details.message})`;
+          } else {
+            errorMsg += ` (Details: ${JSON.stringify(data.details)})`;
+          }
+        }
+        setWaStatusMessage({ type: 'error', text: errorMsg });
+      }
+    } catch (err: any) {
+      setWaStatusMessage({ type: 'error', text: `Error: ${err.message || 'Check network connection.'}` });
+    } finally {
+      setWaSendingTest(false);
+    }
+  };
+
+  const handleSendDailyStaysReport = async () => {
+    setWaSendingDaily(true);
+    setWaStatusMessage(null);
+    try {
+      const res = await fetch('/api/whatsapp/send-daily-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phone: waPhone,
+          provider: waProvider,
+          twilioSid: waTwilioSid,
+          twilioToken: waTwilioToken,
+          twilioNumber: waTwilioNumber,
+          metaPhoneId: waMetaPhoneId,
+          metaToken: waMetaToken
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWaStatusMessage({ type: 'success', text: `Daily stays report successfully sent to ${waPhone}!` });
+      } else {
+        let errorMsg = `Failed to send report: ${data.error || 'Check details.'}`;
+        if (data.details) {
+          if (data.details.error && data.details.error.message) {
+            errorMsg += ` (Meta API: ${data.details.error.message})`;
+          } else if (data.details.message) {
+            errorMsg += ` (Details: ${data.details.message})`;
+          } else {
+            errorMsg += ` (Details: ${JSON.stringify(data.details)})`;
+          }
+        }
+        setWaStatusMessage({ type: 'error', text: errorMsg });
+      }
+    } catch (err: any) {
+      setWaStatusMessage({ type: 'error', text: `Error: ${err.message || 'Check network connection.'}` });
+    } finally {
+      setWaSendingDaily(false);
+    }
+  };
+
+  // Telegram Reminders Configuration States
+  const [tgToken, setTgToken] = useState(localStorage.getItem('tg_token') || '');
+  const [tgChatId, setTgChatId] = useState(localStorage.getItem('tg_chat_id') || '');
+  const [tgSendingTest, setTgSendingTest] = useState(false);
+  const [tgSendingDaily, setTgSendingDaily] = useState(false);
+  const [tgStatusMessage, setTgStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleSaveTgSettings = () => {
+    localStorage.setItem('tg_token', tgToken);
+    localStorage.setItem('tg_chat_id', tgChatId);
+    setTgStatusMessage({ type: 'success', text: 'Telegram Bot token & Chat ID saved in browser local storage successfully!' });
+    setTimeout(() => setTgStatusMessage(null), 4000);
+  };
+
+  const handleTestTelegram = async () => {
+    setTgSendingTest(true);
+    setTgStatusMessage(null);
+    try {
+      const res = await fetch('/api/telegram/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: tgChatId,
+          token: tgToken
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTgStatusMessage({ type: 'success', text: `Test connection successful! Verification message sent to Telegram Chat ID: ${tgChatId}.` });
+      } else {
+        setTgStatusMessage({ type: 'error', text: `Connection failed: ${data.error || 'Check details.'}` });
+      }
+    } catch (err: any) {
+      setTgStatusMessage({ type: 'error', text: `Error: ${err.message || 'Check network connection.'}` });
+    } finally {
+      setTgSendingTest(false);
+    }
+  };
+
+  const handleSendDailyTelegramReport = async () => {
+    setTgSendingDaily(true);
+    setTgStatusMessage(null);
+    try {
+      const res = await fetch('/api/telegram/send-daily-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: tgChatId,
+          token: tgToken
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTgStatusMessage({ type: 'success', text: `Daily stays report successfully sent to Telegram!` });
+      } else {
+        setTgStatusMessage({ type: 'error', text: `Failed to send report: ${data.error || 'Check details.'}` });
+      }
+    } catch (err: any) {
+      setTgStatusMessage({ type: 'error', text: `Error: ${err.message || 'Check network connection.'}` });
+    } finally {
+      setTgSendingDaily(false);
+    }
+  };
+
+  const [aiLoading, setAiLoading] = useState(false);
+  const [showQuickForm, setShowQuickForm] = useState(false);
+
+  const [aiQuickForm, setAiQuickForm] = useState({
+    guest_name: '',
+    guest_phone: '',
+    guest_email: '',
+    guest_address: '',
+    guest_gst: '',
+    check_in: getLocalDateString(),
+    check_out: (() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      return getLocalDateString(d);
+    })(),
+    room_number: '101',
+    room_type: 'Standard',
+    price_per_night: '2000',
+    bill_type: 'GST' as 'GST' | 'Normal',
+    dsda_charge: '0',
+    advance_payment: '0'
+  });
+
+  const handleSendAiMessage = async (customText?: string, formPayload?: any) => {
+    const textToSend = customText || aiInputText;
+    if (!textToSend.trim() && !formPayload) return;
+
+    const userMsgId = Date.now().toString();
+    const userMsgText = formPayload 
+      ? `Auto-Generate Booking & Bill for ${formPayload.guest_name} (Room ${formPayload.room_number}, ${formPayload.check_in} to ${formPayload.check_out}, Rate: Rs. ${formPayload.price_per_night})` 
+      : textToSend;
+
+    const newMsg = {
+      id: userMsgId,
+      sender: 'user' as const,
+      text: userMsgText,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setAiMessages(prev => [...prev, newMsg]);
+    if (!customText && !formPayload) setAiInputText('');
+    setAiLoading(true);
+
+    try {
+      const res = await fetch('/api/ai/booking-chatbot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: textToSend,
+          quickFormData: formPayload
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        const aiReply = {
+          id: (Date.now() + 1).toString(),
+          sender: 'ai' as const,
+          text: data.aiMessage || "Processed successfully!",
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          bookingDetails: data.bookingDetails,
+          billDetails: data.billDetails,
+          bookingsList: data.bookings,
+          roomsList: data.rooms
+        };
+        setAiMessages(prev => [...prev, aiReply]);
+
+        fetchBookings();
+        fetchBills();
+      } else {
+        setAiMessages(prev => [...prev, {
+          id: (Date.now() + 1).toString(),
+          sender: 'ai' as const,
+          text: `Error: ${data.error || 'Failed to process request.'}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }]);
+      }
+    } catch (err: any) {
+      setAiMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        sender: 'ai' as const,
+        text: `Network Error: ${err.message || 'Failed to connect to AI server.'}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }]);
+    } finally {
+      setAiLoading(false);
+    }
+  };
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [allBills, setAllBills] = useState<Bill[]>([]);
   const [guests, setGuests] = useState<{ guest_name: string; booking_count: number; last_stay: string; guest_phone: string; guest_email: string }[]>([]);
@@ -2357,6 +2646,13 @@ Thank you for choosing ${hotelSettings.hotel_name}!
           </div>
           <nav className="flex items-center gap-6 md:gap-8 text-[11px] md:text-sm font-bold uppercase tracking-widest text-black/40 overflow-x-auto no-scrollbar pb-1 md:pb-0">
             <button 
+              onClick={() => setActiveView('ai_chatbot')}
+              className={`hover:text-primary transition-colors flex-shrink-0 flex items-center gap-1.5 px-3 py-1 rounded-full font-bold ${activeView === 'ai_chatbot' ? 'bg-primary text-white' : 'bg-primary/10 text-primary hover:bg-primary/20'}`}
+            >
+              <Sparkles size={14} className="animate-pulse" />
+              <span>AI Chatbot</span>
+            </button>
+            <button 
               onClick={() => setActiveView('availability')}
               className={`hover:text-primary transition-colors flex-shrink-0 ${activeView === 'availability' ? 'text-primary' : ''}`}
             >
@@ -4340,6 +4636,362 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                 </div>
               </div>
             </div>
+
+            {/* Daily Stay Reminders Section (WhatsApp & Telegram) */}
+            <div className="bg-white rounded-3xl border border-black/5 shadow-sm p-8 mt-8">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6 pb-6 border-b border-black/5">
+                <div className="flex items-start gap-3">
+                  <div className="w-12 h-12 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center flex-shrink-0">
+                    <MessageSquare size={24} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-gray-900">Automated Daily Stays Reminders</h3>
+                    <p className="text-xs text-black/40 mt-0.5">Receive automated summaries of today's check-ins & check-outs directly in your chat app every morning at 6:00 AM IST.</p>
+                  </div>
+                </div>
+                <div className="flex bg-black/5 p-1 rounded-2xl">
+                  <button
+                    type="button"
+                    onClick={() => setActiveRemindersTab('telegram')}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${activeRemindersTab === 'telegram' ? 'bg-white text-indigo-600 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                  >
+                    🚀 Telegram (Free & Easy)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveRemindersTab('whatsapp')}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${activeRemindersTab === 'whatsapp' ? 'bg-white text-emerald-600 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                  >
+                    💬 WhatsApp (Twilio/Meta)
+                  </button>
+                </div>
+              </div>
+
+              {activeRemindersTab === 'telegram' ? (
+                <>
+                  {tgStatusMessage && (
+                    <div className={`p-4 rounded-xl mb-6 text-sm flex items-start gap-2.5 border ${
+                      tgStatusMessage.type === 'success' 
+                        ? 'bg-indigo-50 border-indigo-100 text-indigo-800' 
+                        : 'bg-rose-50 border-rose-100 text-rose-800'
+                    }`}>
+                      <Info size={18} className="flex-shrink-0 mt-0.5" />
+                      <p className="font-medium leading-relaxed">{tgStatusMessage.text}</p>
+                    </div>
+                  )}
+
+                  <div className="grid md:grid-cols-2 gap-8 items-start">
+                    {/* Telegram Configs Panel */}
+                    <div className="space-y-6">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-black/40">Telegram Configuration</h4>
+                      
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">Telegram Bot Token *</label>
+                          <input 
+                            required
+                            type="password"
+                            value={tgToken}
+                            onChange={(e) => setTgToken(e.target.value)}
+                            className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none font-mono text-xs"
+                            placeholder="e.g. 1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ"
+                          />
+                          <p className="text-[10px] text-black/40">Enter the API token provided by BotFather on Telegram.</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">Telegram Chat ID *</label>
+                          <input 
+                            required
+                            type="text"
+                            value={tgChatId}
+                            onChange={(e) => setTgChatId(e.target.value)}
+                            className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none font-bold text-xs"
+                            placeholder="e.g. 987654321"
+                          />
+                          <p className="text-[10px] text-black/40">Enter your numeric Telegram Chat ID or group chat ID.</p>
+                        </div>
+
+                        <div className="pt-4 flex flex-col sm:flex-row gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSaveTgSettings}
+                            className="flex-1 h-12 bg-black text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:bg-black/80 transition-all flex items-center justify-center gap-2"
+                          >
+                            <Save size={15} />
+                            <span>Save Local Keys</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleTestTelegram}
+                            disabled={tgSendingTest || !tgToken || !tgChatId}
+                            className="flex-1 h-12 bg-primary/10 hover:bg-primary/20 text-primary font-bold rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                          >
+                            <Send size={15} className={tgSendingTest ? 'animate-pulse' : ''} />
+                            <span>{tgSendingTest ? 'Sending...' : 'Test Connection'}</span>
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleSendDailyTelegramReport}
+                          disabled={tgSendingDaily || !tgToken || !tgChatId}
+                          className="w-full h-12 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-md shadow-indigo-600/10 transition-all flex items-center justify-center gap-2"
+                        >
+                          <Sparkles size={15} className={tgSendingDaily ? 'animate-spin' : ''} />
+                          <span>{tgSendingDaily ? 'Processing Summary...' : 'Send Today\'s Report Right Now'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Telegram Instructional Guide */}
+                    <div className="space-y-6 bg-gray-50/70 p-6 rounded-2xl border border-black/5">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-black/60 flex items-center gap-1.5">
+                        <HelpCircle size={16} className="text-primary" />
+                        How to Setup & Connect Telegram Bot (Free & Fast)
+                      </h4>
+
+                      <div className="space-y-4 text-xs text-gray-700 leading-relaxed">
+                        <p>Telegram is **100% Free Forever** with no expiration, limits, or complex approvals. Here is the simple 2-minute setup:</p>
+                        
+                        <div className="space-y-3">
+                          <p className="font-bold text-gray-900 border-b border-gray-200 pb-1">Step 1: Create your Bot</p>
+                          <ol className="list-decimal list-inside space-y-1.5 pl-1">
+                            <li>Open Telegram and search for <span className="font-bold text-indigo-600">@BotFather</span> (the official bot manager).</li>
+                            <li>Send the message: <span className="font-semibold text-indigo-700">/newbot</span></li>
+                            <li>Choose a name for your bot (e.g., <span className="italic">Golden Peacock Assistant</span>).</li>
+                            <li>Choose a username ending in "bot" (e.g., <span className="italic">PeacockHotel_bot</span>).</li>
+                            <li>Copy the generated **HTTP API Token** (e.g. <span className="font-mono bg-white px-1 border font-semibold text-gray-800">1234567:AAFF...</span>) and paste it into the form on the left.</li>
+                          </ol>
+                        </div>
+
+                        <div className="space-y-3 pt-2">
+                          <p className="font-bold text-gray-900 border-b border-gray-200 pb-1">Step 2: Get your Chat ID</p>
+                          <ol className="list-decimal list-inside space-y-1.5 pl-1">
+                            <li>Click on your bot's link from BotFather to open a chat, and press **START** (or send any message like "hi").</li>
+                            <li>To instantly get your Chat ID, search for the bot <span className="font-bold text-indigo-600">@userinfobot</span> on Telegram and send it any message. It will reply with your numeric **Id** (e.g., <span className="font-mono bg-white px-1 border font-semibold text-gray-800">987654321</span>).</li>
+                            <li>Copy and paste that Chat ID into the form.</li>
+                            <li>Click **Save Local Keys**, then click **Test Connection**!</li>
+                          </ol>
+                        </div>
+
+                        <div className="pt-3 border-t border-gray-200">
+                          <p className="font-bold text-gray-900 mb-1">⏰ Daily Morning Telegram Cron Automation</p>
+                          <p className="text-black/60">
+                            Once configured, the server exposes a secure Telegram cron endpoint:
+                          </p>
+                          <p className="font-mono bg-white p-2 border border-gray-200 rounded mt-1.5 text-[10px] break-all select-all font-bold text-gray-800">
+                            {window.location.origin}/api/cron/telegram-reminders
+                          </p>
+                          <p className="text-black/60 mt-1.5">
+                            You can schedule a free cron tool like <a href="https://cron-job.org" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-bold">Cron-Job.org</a> to visit this link every morning at 06:00 AM IST to send the automated summary straight to your Telegram app.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {waStatusMessage && (
+                    <div className={`p-4 rounded-xl mb-6 text-sm flex items-start gap-2.5 border ${
+                      waStatusMessage.type === 'success' 
+                        ? 'bg-emerald-50 border-emerald-100 text-emerald-800' 
+                        : 'bg-rose-50 border-rose-100 text-rose-800'
+                    }`}>
+                      <Info size={18} className="flex-shrink-0 mt-0.5" />
+                      <p className="font-medium leading-relaxed">{waStatusMessage.text}</p>
+                    </div>
+                  )}
+
+                  <div className="grid md:grid-cols-2 gap-8 items-start">
+                    {/* Configurations Panel */}
+                    <div className="space-y-6">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-black/40">Reminders Configuration</h4>
+                      
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">Recipient Phone Number (with Country Code) *</label>
+                          <input 
+                            required
+                            type="text"
+                            value={waPhone}
+                            onChange={(e) => setWaPhone(e.target.value)}
+                            className="w-full h-12 px-4 rounded-xl bg-black/5 border-transparent focus:bg-white focus:border-primary focus:ring-0 transition-all outline-none font-bold"
+                            placeholder="e.g. 8777264725"
+                          />
+                          <p className="text-[10px] text-black/40">Reminders will be sent directly to this WhatsApp contact.</p>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">WhatsApp API Provider *</label>
+                          <div className="grid grid-cols-2 gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setWaProvider('twilio')}
+                              className={`h-12 px-4 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 transition-all ${waProvider === 'twilio' ? 'bg-primary text-white border-primary shadow-sm' : 'bg-black/5 border-transparent text-gray-700 hover:bg-black/[0.08]'}`}
+                            >
+                              <span>Twilio WhatsApp API</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setWaProvider('meta')}
+                              className={`h-12 px-4 rounded-xl border font-bold text-xs flex items-center justify-center gap-2 transition-all ${waProvider === 'meta' ? 'bg-primary text-white border-primary shadow-sm' : 'bg-black/5 border-transparent text-gray-700 hover:bg-black/[0.08]'}`}
+                            >
+                              <span>Meta Cloud API</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Twilio Specific Fields */}
+                        {waProvider === 'twilio' && (
+                          <div className="space-y-4 p-5 bg-black/[0.02] rounded-2xl border border-black/5">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-red-500 bg-red-100 px-1.5 py-0.5 rounded">Twilio Method</span>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">Twilio Account SID</label>
+                              <input 
+                                type="text"
+                                value={waTwilioSid}
+                                onChange={(e) => setWaTwilioSid(e.target.value)}
+                                className="w-full h-11 px-4 rounded-xl bg-white border border-black/10 focus:border-primary outline-none text-xs font-mono"
+                                placeholder="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">Twilio Auth Token</label>
+                              <input 
+                                type="password"
+                                value={waTwilioToken}
+                                onChange={(e) => setWaTwilioToken(e.target.value)}
+                                className="w-full h-11 px-4 rounded-xl bg-white border border-black/10 focus:border-primary outline-none text-xs font-mono"
+                                placeholder="Enter auth token"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">Twilio WhatsApp Sender Phone</label>
+                              <input 
+                                type="text"
+                                value={waTwilioNumber}
+                                onChange={(e) => setWaTwilioNumber(e.target.value)}
+                                className="w-full h-11 px-4 rounded-xl bg-white border border-black/10 focus:border-primary outline-none text-xs font-mono"
+                                placeholder="whatsapp:+14155238886"
+                              />
+                              <p className="text-[9px] text-black/40">Use `whatsapp:+14155238886` if using Twilio's Sandbox.</p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Meta Specific Fields */}
+                        {waProvider === 'meta' && (
+                          <div className="space-y-4 p-5 bg-black/[0.02] rounded-2xl border border-black/5">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold uppercase text-blue-500 bg-blue-100 px-1.5 py-0.5 rounded">Meta Cloud API Method</span>
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">WhatsApp Phone Number ID</label>
+                              <input 
+                                type="text"
+                                value={waMetaPhoneId}
+                                onChange={(e) => setWaMetaPhoneId(e.target.value)}
+                                className="w-full h-11 px-4 rounded-xl bg-white border border-black/10 focus:border-primary outline-none text-xs font-mono"
+                                placeholder="e.g. 104928172821234"
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 block">System User Access Token (Permanent)</label>
+                              <input 
+                                type="password"
+                                value={waMetaToken}
+                                onChange={(e) => setWaMetaToken(e.target.value)}
+                                className="w-full h-11 px-4 rounded-xl bg-white border border-black/10 focus:border-primary outline-none text-xs font-mono"
+                                placeholder="EAAGxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="pt-4 flex flex-col sm:flex-row gap-3">
+                          <button
+                            type="button"
+                            onClick={handleSaveWaSettings}
+                            className="flex-1 h-12 bg-black text-white font-bold rounded-xl text-xs uppercase tracking-wider hover:bg-black/80 transition-all flex items-center justify-center gap-2"
+                          >
+                            <Save size={15} />
+                            <span>Save Local Keys</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleTestWhatsApp}
+                            disabled={waSendingTest || !waPhone}
+                            className="flex-1 h-12 bg-primary/10 hover:bg-primary/20 text-primary font-bold rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2"
+                          >
+                            <Send size={15} className={waSendingTest ? 'animate-pulse' : ''} />
+                            <span>{waSendingTest ? 'Sending...' : 'Test Connection'}</span>
+                          </button>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleSendDailyStaysReport}
+                          disabled={waSendingDaily || !waPhone}
+                          className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs uppercase tracking-wider shadow-md shadow-emerald-600/10 transition-all flex items-center justify-center gap-2"
+                        >
+                          <Sparkles size={15} className={waSendingDaily ? 'animate-spin' : ''} />
+                          <span>{waSendingDaily ? 'Processing Summary...' : 'Send Today\'s Report Right Now'}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Educational Instructional Guides */}
+                    <div className="space-y-6 bg-gray-50/70 p-6 rounded-2xl border border-black/5">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-black/60 flex items-center gap-1.5">
+                        <HelpCircle size={16} className="text-primary" />
+                        How to Setup & Connect WhatsApp
+                      </h4>
+
+                      <div className="space-y-4 text-xs text-gray-700 leading-relaxed">
+                        <p>To enable fully automated, hands-free morning summaries on WhatsApp, follow either of these simple connection setups:</p>
+                        
+                        <div className="space-y-3">
+                          <p className="font-bold text-gray-900 border-b border-gray-200 pb-1">Option A: Connecting with Twilio (Recommended for quick setup)</p>
+                          <ol className="list-decimal list-inside space-y-1.5 pl-1">
+                            <li>Go to <a href="https://www.twilio.com" target="_blank" rel="noopener noreferrer" className="text-primary font-bold hover:underline">Twilio Console</a> & create a free account.</li>
+                            <li>Copy your <span className="font-mono bg-white px-1 border font-semibold">Account SID</span> and <span className="font-mono bg-white px-1 border font-semibold">Auth Token</span> and paste them in the settings panel here.</li>
+                            <li>Activate the **Twilio Sandbox for WhatsApp** by scanning the QR code or texting <span className="font-semibold text-emerald-700">"join [sandbox-keyword]"</span> to <span className="font-bold">+1 415 523 8886</span> on your mobile phone (<span className="font-bold">{waPhone}</span>).</li>
+                            <li>Click **Save Local Keys** and then **Test Connection** to receive your first automated summary!</li>
+                          </ol>
+                        </div>
+
+                        <div className="space-y-3 pt-2">
+                          <p className="font-bold text-gray-900 border-b border-gray-200 pb-1">Option B: Connecting with Meta WhatsApp Cloud API</p>
+                          <ol className="list-decimal list-inside space-y-1.5 pl-1">
+                            <li>Go to <a href="https://developers.facebook.com" target="_blank" rel="noopener noreferrer" className="text-primary font-bold hover:underline">Meta for Developers</a> dashboard.</li>
+                            <li>Add the **WhatsApp** product to your Meta application.</li>
+                            <li>Copy your generated **Phone Number ID** and **System User Access Token** (generate a Permanent/Never Expire token for continuous cron support).</li>
+                            <li>Paste them here, click **Save Local Keys**, and trigger a **Test Connection**.</li>
+                          </ol>
+                        </div>
+
+                        <div className="pt-3 border-t border-gray-200">
+                          <p className="font-bold text-gray-900 mb-1">⏰ Daily Morning Cron Automation (At 06:00 AM)</p>
+                          <p className="text-black/60">
+                            Once you save your credentials in the main deployment `.env`, the server exposes a secure webhook URL:
+                          </p>
+                          <p className="font-mono bg-white p-2 border border-gray-200 rounded mt-1.5 text-[10px] break-all select-all font-bold text-gray-800">
+                            {window.location.origin}/api/cron/whatsapp-reminders
+                          </p>
+                          <p className="text-black/60 mt-1.5">
+                            You can configure a free service like <a href="https://cron-job.org" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-bold">Cron-Job.org</a> or Google Cloud Scheduler to hit this URL every day at 06:00 AM IST to fully automate stays reporting.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           </motion.div>
         ) : activeView === 'inventory' ? (
           <motion.div 
@@ -4490,8 +5142,437 @@ Thank you for choosing ${hotelSettings.hotel_name}!
               </div>
             </div>
           </motion.div>
+        ) : activeView === 'ai_chatbot' ? (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="space-y-8 max-w-5xl mx-auto"
+          >
+            {/* AI Assistant Header Banner */}
+            <div className="bg-gradient-to-r from-primary/10 via-amber-50 to-primary/5 rounded-3xl p-6 md:p-8 border border-primary/20 shadow-sm relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+                <Sparkles size={160} className="text-primary" />
+              </div>
+
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6 relative z-10">
+                <div className="flex items-start gap-4">
+                  <div className="w-14 h-14 bg-primary text-white rounded-2xl flex items-center justify-center shadow-lg shadow-primary/30 flex-shrink-0">
+                    <Sparkles size={28} className="animate-pulse" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <h2 className="text-2xl md:text-3xl font-bold tracking-tight text-gray-900">
+                        AI Booking & Auto-Billing Chatbot
+                      </h2>
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-100 text-emerald-800 text-xs font-bold rounded-full">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Gemini 3.6 Flash Active
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600 mt-1 max-w-2xl">
+                      Simply share stay details in plain text (e.g., <span className="font-semibold text-gray-900">"Book Room 101 for Sankha Suvra Pal from 2026-08-10 to 2026-08-12 at Rs. 2000/night"</span>). The AI automatically creates the booking, generates the bill, and saves it into <span className="font-semibold text-primary">View Bookings</span> & <span className="font-semibold text-primary">View Bills</span>!
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 w-full md:w-auto">
+                  <button
+                    onClick={() => setShowQuickForm(!showQuickForm)}
+                    className={`flex-1 md:flex-none h-11 px-4 rounded-xl text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all ${showQuickForm ? 'bg-primary text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-50 border border-gray-200'}`}
+                  >
+                    <List size={16} />
+                    <span>{showQuickForm ? 'Switch to Chat' : 'Quick Form Mode'}</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAiMessages([{
+                        id: Date.now().toString(),
+                        sender: 'ai',
+                        text: "👋 Chat reset! How can I help you with room bookings or bill generation today?",
+                        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      }]);
+                    }}
+                    className="h-11 px-3 bg-white text-gray-500 hover:text-gray-900 rounded-xl border border-gray-200 hover:bg-gray-50 transition-all text-xs font-semibold flex items-center gap-1"
+                    title="Reset Chat"
+                  >
+                    <RefreshCw size={15} />
+                    <span className="hidden sm:inline">Reset</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Prompt Chips */}
+              <div className="mt-6 pt-6 border-t border-gray-200/60">
+                <p className="text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-3 flex items-center gap-1.5">
+                  <Sparkles size={12} className="text-primary" />
+                  Try 1-Click Prompt Suggestions:
+                </p>
+                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+                  <button
+                    onClick={() => handleSendAiMessage("Book Room 101 Standard for Sankha Suvra Pal, check-in 2026-08-10, check-out 2026-08-12 at Rs. 2000/night and generate bill")}
+                    className="text-xs bg-white/90 hover:bg-white text-gray-800 hover:text-primary px-3.5 py-2 rounded-xl border border-gray-200 hover:border-primary/40 shadow-2xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    <span>✨ "Book Room 101 for Sankha Suvra Pal (10-12 Aug) @ 2000/night"</span>
+                  </button>
+                  <button
+                    onClick={() => handleSendAiMessage("Create GST bill for Abhijit Patra, Deluxe Room 103, check-in 2026-08-15, check-out 2026-08-18, price 3500")}
+                    className="text-xs bg-white/90 hover:bg-white text-gray-800 hover:text-primary px-3.5 py-2 rounded-xl border border-gray-200 hover:border-primary/40 shadow-2xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    <span>✨ "Create GST bill for Abhijit Patra (Room 103 @ 3500)"</span>
+                  </button>
+                  <button
+                    onClick={() => handleSendAiMessage("View bookings for Sankha Suvra Pal")}
+                    className="text-xs bg-white/90 hover:bg-white text-gray-800 hover:text-primary px-3.5 py-2 rounded-xl border border-gray-200 hover:border-primary/40 shadow-2xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    <span>🔍 "View bookings for Sankha Suvra Pal"</span>
+                  </button>
+                  <button
+                    onClick={() => handleSendAiMessage("Check room availability for 2026-08-20 to 2026-08-22")}
+                    className="text-xs bg-white/90 hover:bg-white text-gray-800 hover:text-primary px-3.5 py-2 rounded-xl border border-gray-200 hover:border-primary/40 shadow-2xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 flex-shrink-0"
+                  >
+                    <span>🏨 "Check room availability for next week"</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Quick Form Mode */}
+            {showQuickForm ? (
+              <div className="bg-white rounded-3xl p-6 md:p-8 shadow-sm border border-gray-200">
+                <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-100">
+                  <h3 className="text-xl font-bold flex items-center gap-2">
+                    <List className="text-primary" size={22} />
+                    AI Instant Booking & Bill Generator Form
+                  </h3>
+                  <span className="text-xs text-gray-400">Fills all details into AI engine instantly</span>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSendAiMessage(undefined, {
+                      ...aiQuickForm,
+                      rooms: [{
+                        room_number: aiQuickForm.room_number,
+                        room_type: aiQuickForm.room_type,
+                        price_per_night: Number(aiQuickForm.price_per_night) || 2000
+                      }]
+                    });
+                    setShowQuickForm(false);
+                  }}
+                  className="space-y-6"
+                >
+                  <div className="grid md:grid-cols-3 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Guest Name *</label>
+                      <input
+                        required
+                        type="text"
+                        value={aiQuickForm.guest_name}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, guest_name: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm font-medium"
+                        placeholder="e.g. Sankha Suvra Pal"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Phone Number</label>
+                      <input
+                        type="tel"
+                        value={aiQuickForm.guest_phone}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, guest_phone: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm"
+                        placeholder="e.g. 9876543210"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">GST Number (Optional)</label>
+                      <input
+                        type="text"
+                        value={aiQuickForm.guest_gst}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, guest_gst: e.target.value, bill_type: e.target.value ? 'GST' : aiQuickForm.bill_type})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm uppercase font-mono"
+                        placeholder="e.g. 19ABCDE1234F1Z5"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-4 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Check-In Date *</label>
+                      <input
+                        required
+                        type="date"
+                        value={aiQuickForm.check_in}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, check_in: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm font-medium"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Check-Out Date *</label>
+                      <input
+                        required
+                        type="date"
+                        value={aiQuickForm.check_out}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, check_out: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm font-medium"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Room Number *</label>
+                      <input
+                        required
+                        type="text"
+                        value={aiQuickForm.room_number}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, room_number: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm font-medium"
+                        placeholder="e.g. 101"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Price/Night (Rs) *</label>
+                      <input
+                        required
+                        type="number"
+                        value={aiQuickForm.price_per_night}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, price_per_night: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm font-bold text-primary"
+                        placeholder="2000"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-3 gap-4 pt-2">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Bill Type</label>
+                      <select
+                        value={aiQuickForm.bill_type}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, bill_type: e.target.value as any})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm font-semibold"
+                      >
+                        <option value="GST">GST Bill (5% Tax)</option>
+                        <option value="Normal">Normal Bill (0% Tax)</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">DSDA Charge (Rs)</label>
+                      <input
+                        type="number"
+                        value={aiQuickForm.dsda_charge}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, dsda_charge: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm"
+                        placeholder="0"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold text-gray-600 uppercase tracking-wider">Advance Paid (Rs)</label>
+                      <input
+                        type="number"
+                        value={aiQuickForm.advance_payment}
+                        onChange={(e) => setAiQuickForm({...aiQuickForm, advance_payment: e.target.value})}
+                        className="w-full h-11 px-4 bg-gray-50 rounded-xl border border-gray-200 focus:bg-white focus:border-primary outline-none transition-all text-sm"
+                        placeholder="0"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pt-4 flex gap-4">
+                    <button
+                      type="button"
+                      onClick={() => setShowQuickForm(false)}
+                      className="flex-1 h-12 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold transition-all text-sm"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={aiLoading}
+                      className="flex-[2] h-12 bg-primary hover:bg-primary-hover text-white rounded-xl font-bold shadow-lg shadow-primary/20 transition-all text-sm flex items-center justify-center gap-2"
+                    >
+                      <Sparkles size={18} />
+                      <span>{aiLoading ? 'Auto-Generating...' : 'Generate Booking & Bill Now'}</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : null}
+
+            {/* Chat Container */}
+            <div className="bg-white rounded-3xl shadow-sm border border-gray-200 overflow-hidden flex flex-col h-[600px]">
+              {/* Chat Messages */}
+              <div className="flex-1 p-6 overflow-y-auto space-y-6 bg-gray-50/50">
+                {aiMessages.map((msg) => (
+                  <div
+                    key={msg.id}
+                    className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}
+                  >
+                    <div className="flex items-center gap-2 mb-1 px-1">
+                      {msg.sender === 'ai' ? (
+                        <span className="text-xs font-bold text-primary flex items-center gap-1">
+                          <Sparkles size={12} /> Golden Peacock AI Assistant
+                        </span>
+                      ) : (
+                        <span className="text-xs font-bold text-gray-500">You</span>
+                      )}
+                      <span className="text-[10px] text-gray-400">{msg.timestamp}</span>
+                    </div>
+
+                    <div
+                      className={`max-w-2xl rounded-2xl p-4 shadow-2xs text-sm leading-relaxed ${
+                        msg.sender === 'user'
+                          ? 'bg-primary text-white rounded-tr-none'
+                          : 'bg-white text-gray-800 border border-gray-200 rounded-tl-none'
+                      }`}
+                    >
+                      <p className="whitespace-pre-wrap">{msg.text}</p>
+
+                      {/* Render Confirmation Card if Booking + Bill created */}
+                      {msg.billDetails && msg.bookingDetails && (
+                        <div className="mt-4 pt-4 border-t border-gray-100 bg-emerald-50/80 rounded-xl p-4 border border-emerald-200 text-gray-900 space-y-3">
+                          <div className="flex items-center justify-between border-b border-emerald-200/60 pb-2">
+                            <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                              <CheckCircle2 size={16} className="text-emerald-600" />
+                              Generated Bill & Booking Record
+                            </span>
+                            <span className="font-mono text-xs font-bold bg-emerald-200/60 text-emerald-900 px-2.5 py-0.5 rounded-full">
+                              {msg.billDetails.invoice_id}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-xs">
+                            <div>
+                              <p className="text-gray-500 font-medium">Guest Name:</p>
+                              <p className="font-bold text-gray-900">{msg.bookingDetails.guest_name}</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500 font-medium">Booking Reference:</p>
+                              <p className="font-mono font-bold text-gray-900">{msg.bookingDetails.booking_id}</p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500 font-medium">Check-In - Check-Out:</p>
+                              <p className="font-semibold text-gray-900">
+                                {formatDateDDMMYYYY(msg.bookingDetails.check_in)} to {formatDateDDMMYYYY(msg.bookingDetails.check_out)} ({msg.bookingDetails.nights} Night{msg.bookingDetails.nights > 1 ? 's' : ''})
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-gray-500 font-medium">Total Bill Amount:</p>
+                              <p className="font-extrabold text-primary text-sm">
+                                Rs. {msg.billDetails.total_amount?.toLocaleString('en-IN')}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="pt-2 border-t border-emerald-200/60 flex items-center gap-2 flex-wrap">
+                            <button
+                              onClick={() => {
+                                setSearchQuery(msg.bookingDetails.guest_name);
+                                setActiveView('bookings');
+                              }}
+                              className="px-3 py-1.5 bg-white hover:bg-emerald-100 text-emerald-900 rounded-lg text-xs font-bold border border-emerald-300 shadow-2xs transition-all flex items-center gap-1"
+                            >
+                              <ExternalLink size={12} />
+                              View in View Bookings
+                            </button>
+                            <button
+                              onClick={() => {
+                                setSearchQuery(msg.billDetails.invoice_id);
+                                setActiveView('all_bills');
+                              }}
+                              className="px-3 py-1.5 bg-white hover:bg-emerald-100 text-emerald-900 rounded-lg text-xs font-bold border border-emerald-300 shadow-2xs transition-all flex items-center gap-1"
+                            >
+                              <FileText size={12} />
+                              View in All Bills
+                            </button>
+                            <button
+                              onClick={() => downloadBillFromHistory(msg.billDetails)}
+                              className="px-3 py-1.5 bg-primary text-white hover:bg-primary-hover rounded-lg text-xs font-bold shadow-2xs transition-all flex items-center gap-1"
+                            >
+                              <Download size={12} />
+                              Download Bill PDF
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Render Bookings List if query resulted in search */}
+                      {msg.bookingsList && msg.bookingsList.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+                          <p className="text-xs font-bold text-gray-700">Matching Bookings in View Bookings:</p>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                            {msg.bookingsList.map((bk: any) => (
+                              <div key={bk.id} className="bg-gray-50 p-2.5 rounded-xl border border-gray-200 text-xs flex items-center justify-between">
+                                <div>
+                                  <p className="font-bold text-gray-900">{bk.guest_name} (Room {bk.room_number || 'N/A'})</p>
+                                  <p className="text-gray-500">{bk.check_in} to {bk.check_out} | {bk.booking_id}</p>
+                                </div>
+                                <button
+                                  onClick={() => {
+                                    setSearchQuery(bk.guest_name);
+                                    setActiveView('bookings');
+                                  }}
+                                  className="px-2.5 py-1 bg-primary text-white text-[11px] font-bold rounded-lg hover:bg-primary-hover"
+                                >
+                                  View
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+                {aiLoading && (
+                  <div className="flex items-center gap-3 p-4 bg-white rounded-2xl border border-gray-200 max-w-sm shadow-2xs">
+                    <Sparkles size={18} className="animate-spin text-primary" />
+                    <span className="text-xs font-medium text-gray-600">Golden Peacock AI is parsing stay details & generating bill...</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Chat Input Bar */}
+              <div className="p-4 bg-white border-t border-gray-200">
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSendAiMessage();
+                  }}
+                  className="flex items-center gap-3"
+                >
+                  <input
+                    type="text"
+                    value={aiInputText}
+                    onChange={(e) => setAiInputText(e.target.value)}
+                    disabled={aiLoading}
+                    placeholder="Type stay details e.g., 'Book Room 101 for Sankha Suvra Pal from 2026-08-10 to 2026-08-12 at 2000/night'"
+                    className="flex-1 h-12 px-4 bg-gray-50 rounded-2xl border border-gray-200 focus:bg-white focus:border-primary outline-none text-sm transition-all placeholder:text-gray-400"
+                  />
+                  <button
+                    type="submit"
+                    disabled={aiLoading || !aiInputText.trim()}
+                    className="h-12 px-6 bg-primary hover:bg-primary-hover disabled:opacity-40 text-white font-bold rounded-2xl shadow-md transition-all flex items-center gap-2"
+                  >
+                    <Send size={18} />
+                    <span className="hidden sm:inline">Send</span>
+                  </button>
+                </form>
+              </div>
+            </div>
+          </motion.div>
         ) : null}
       </main>
+
+      {/* Floating AI Chat Assistant Trigger Button */}
+      {activeView !== 'ai_chatbot' && (
+        <button
+          onClick={() => setActiveView('ai_chatbot')}
+          className="fixed bottom-6 right-6 z-50 px-5 py-3.5 bg-primary text-white rounded-full shadow-2xl hover:bg-primary-hover hover:scale-105 active:scale-95 transition-all flex items-center gap-2.5 font-bold text-sm border-2 border-white/20"
+          title="Open AI Booking & Auto-Billing Chatbot"
+        >
+          <Sparkles size={20} className="animate-pulse" />
+          <span>AI Booking Assistant</span>
+        </button>
+      )}
 
       {/* Booking Review Modal */}
       <AnimatePresence>
