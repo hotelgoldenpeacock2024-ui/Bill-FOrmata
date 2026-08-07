@@ -1210,19 +1210,59 @@ Default bill_type to 'GST' if GSTIN is present or mentioned, otherwise 'GST' if 
 });
 
 // WhatsApp Automated Reminders Helper Functions & Endpoints
+async function getWhatsAppConfig() {
+  const config = {
+    provider: process.env.WHATSAPP_PROVIDER || "meta",
+    twilioSid: process.env.TWILIO_ACCOUNT_SID || "",
+    twilioToken: process.env.TWILIO_AUTH_TOKEN || "",
+    twilioNumber: process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886",
+    metaPhoneId: process.env.META_WHATSAPP_PHONE_NUMBER_ID || "",
+    metaToken: process.env.META_WHATSAPP_ACCESS_TOKEN || "",
+    recipientPhone: process.env.WHATSAPP_RECIPIENT_PHONE || "8777264725",
+  };
+
+  try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const { data, error } = await supabase.from("settings").select("*");
+      if (!error && data && data.length > 0) {
+        const dbSettings = data.reduce((acc: any, curr: any) => {
+          acc[curr.key] = curr.value;
+          return acc;
+        }, {});
+
+        if (dbSettings.wa_provider) config.provider = dbSettings.wa_provider;
+        if (dbSettings.wa_twilio_sid) config.twilioSid = dbSettings.wa_twilio_sid;
+        if (dbSettings.wa_twilio_token) config.twilioToken = dbSettings.wa_twilio_token;
+        if (dbSettings.wa_twilio_number) config.twilioNumber = dbSettings.wa_twilio_number;
+        if (dbSettings.wa_meta_phone_id) config.metaPhoneId = dbSettings.wa_meta_phone_id;
+        if (dbSettings.wa_meta_token) config.metaToken = dbSettings.wa_meta_token;
+        if (dbSettings.wa_phone) config.recipientPhone = dbSettings.wa_phone;
+      }
+    }
+  } catch (err) {
+    console.warn("Could not load WhatsApp config from Supabase settings:", err);
+  }
+
+  return config;
+}
+
 async function sendWhatsAppMessage(recipientPhone: string, messageBody: string) {
-  const provider = process.env.WHATSAPP_PROVIDER || "twilio"; // 'twilio' or 'meta'
+  const config = await getWhatsAppConfig();
+  
+  const targetPhone = recipientPhone || config.recipientPhone;
+  const provider = config.provider;
   
   if (provider === "twilio") {
-    const sid = process.env.TWILIO_ACCOUNT_SID;
-    const token = process.env.TWILIO_AUTH_TOKEN;
-    const fromNumber = process.env.TWILIO_WHATSAPP_NUMBER || "whatsapp:+14155238886"; // Sandbox default
+    const sid = config.twilioSid;
+    const token = config.twilioToken;
+    const fromNumber = config.twilioNumber;
 
     if (!sid || !token) {
-      throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN in environment variables.");
+      throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN in environment variables or database settings.");
     }
 
-    const cleanTo = recipientPhone.replace(/\D/g, '');
+    const cleanTo = targetPhone.replace(/\D/g, '');
     const toFormatted = `whatsapp:+${cleanTo}`;
     const fromFormatted = fromNumber.startsWith('whatsapp:') ? fromNumber : `whatsapp:${fromNumber}`;
 
@@ -1243,14 +1283,14 @@ async function sendWhatsAppMessage(recipientPhone: string, messageBody: string) 
     );
     return response.data;
   } else if (provider === "meta") {
-    const phoneId = process.env.META_WHATSAPP_PHONE_NUMBER_ID;
-    const token = process.env.META_WHATSAPP_ACCESS_TOKEN;
+    const phoneId = config.metaPhoneId;
+    const token = config.metaToken;
 
     if (!phoneId || !token) {
-      throw new Error("Missing META_WHATSAPP_PHONE_NUMBER_ID or META_WHATSAPP_ACCESS_TOKEN in environment variables.");
+      throw new Error("Missing META_WHATSAPP_PHONE_NUMBER_ID or META_WHATSAPP_ACCESS_TOKEN in environment variables or database settings.");
     }
 
-    const cleanTo = recipientPhone.replace(/\D/g, '');
+    const cleanTo = targetPhone.replace(/\D/g, '');
     const response = await axios.post(
       `https://graph.facebook.com/v18.0/${phoneId}/messages`,
       {

@@ -238,7 +238,7 @@ export default function App() {
   const [waSendingDaily, setWaSendingDaily] = useState(false);
   const [waStatusMessage, setWaStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const handleSaveWaSettings = () => {
+  const handleSaveWaSettings = async () => {
     localStorage.setItem('wa_phone', waPhone);
     localStorage.setItem('wa_provider', waProvider);
     localStorage.setItem('wa_twilio_sid', waTwilioSid);
@@ -246,7 +246,31 @@ export default function App() {
     localStorage.setItem('wa_twilio_number', waTwilioNumber);
     localStorage.setItem('wa_meta_phone_id', waMetaPhoneId);
     localStorage.setItem('wa_meta_token', waMetaToken);
-    setWaStatusMessage({ type: 'success', text: 'WhatsApp configurations saved in browser local storage successfully!' });
+    
+    setWaStatusMessage({ type: 'success', text: 'Saving configurations securely to database...' });
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          wa_phone: waPhone,
+          wa_provider: waProvider,
+          wa_twilio_sid: waTwilioSid,
+          wa_twilio_token: waTwilioToken,
+          wa_twilio_number: waTwilioNumber,
+          wa_meta_phone_id: waMetaPhoneId,
+          wa_meta_token: waMetaToken
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setWaStatusMessage({ type: 'success', text: 'WhatsApp configurations saved in database and browser successfully!' });
+      } else {
+        setWaStatusMessage({ type: 'error', text: `Saved to browser only. DB error: ${data.error || 'Check server logs.'}` });
+      }
+    } catch (err: any) {
+      setWaStatusMessage({ type: 'error', text: `Saved to browser only. network error: ${err.message}` });
+    }
     setTimeout(() => setWaStatusMessage(null), 4000);
   };
 
@@ -967,6 +991,15 @@ export default function App() {
         return;
       }
       setHotelSettings(prev => ({ ...prev, ...(data || {}) }));
+      
+      // Load WhatsApp settings from DB if present
+      if (data.wa_phone) setWaPhone(data.wa_phone);
+      if (data.wa_provider) setWaProvider(data.wa_provider);
+      if (data.wa_twilio_sid) setWaTwilioSid(data.wa_twilio_sid);
+      if (data.wa_twilio_token) setWaTwilioToken(data.wa_twilio_token);
+      if (data.wa_twilio_number) setWaTwilioNumber(data.wa_twilio_number);
+      if (data.wa_meta_phone_id) setWaMetaPhoneId(data.wa_meta_phone_id);
+      if (data.wa_meta_token) setWaMetaToken(data.wa_meta_token);
     } catch (error) {
       console.error("Error fetching settings:", error);
     }
