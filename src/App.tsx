@@ -767,13 +767,11 @@ export default function App() {
 
   useEffect(() => {
     if (showManualBill) {
-      let bId = manualBookingId;
-      if (!bId) {
-        bId = `MANUAL-${Date.now()}`;
-        setManualBookingId(bId);
+      if (!manualBookingId) {
+        setManualBookingId(`MANUAL-${Date.now()}`);
       }
       const mockBooking = {
-        booking_id: bId,
+        booking_id: manualBookingId || `MANUAL-${Date.now()}`,
         check_in: manualBillData.check_in,
         check_out: manualBillData.check_out,
       };
@@ -6206,73 +6204,154 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </div>
                   )}
 
-                  <div className="flex gap-4 pt-4">
-                    <button 
-                      onClick={() => {
-                        const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
-                        const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
-                          id: Date.now() + idx,
-                          booking_id: bookingId,
-                          invoice_id: manualInvoiceId || undefined,
-                          guest_name: manualBillData.guest_name,
-                          guest_phone: manualBillData.guest_phone,
-                          guest_email: manualBillData.guest_email,
-                          guest_address: manualBillData.guest_address,
-                          guest_gst: manualBillData.guest_gst,
-                          company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
-                          company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
-                          room_number: room.room_number,
-                          room_type: room.room_type,
-                          room_price: room.room_price,
-                          check_in: manualBillData.check_in,
-                          check_out: manualBillData.check_out,
-                          dsda_charge: idx === 0 ? manualBillData.dsda_charge : 0,
-                          advance_payment: 0,
-                          adults: 1,
-                          children: 0
-                        }));
-                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, false, manualBillData.bill_date);
-                        alert("Manual Normal Bill generated and saved to All Bills history.");
-                        setShowManualBill(false);
-                      }}
-                      className="flex-1 h-14 bg-black/5 text-black rounded-2xl font-bold hover:bg-black/10 transition-all flex items-center justify-center gap-2"
-                    >
-                      <Printer size={20} />
-                      Normal Bill
-                    </button>
-                    <button 
-                      onClick={() => {
-                        const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
-                        const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
-                          id: Date.now() + idx,
-                          booking_id: bookingId,
-                          invoice_id: manualInvoiceId || undefined,
-                          guest_name: manualBillData.guest_name,
-                          guest_phone: manualBillData.guest_phone,
-                          guest_email: manualBillData.guest_email,
-                          guest_address: manualBillData.guest_address,
-                          guest_gst: manualBillData.guest_gst,
-                          company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
-                          company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
-                          room_number: room.room_number,
-                          room_type: room.room_type,
-                          room_price: room.room_price,
-                          check_in: manualBillData.check_in,
-                          check_out: manualBillData.check_out,
-                          dsda_charge: idx === 0 ? manualBillData.dsda_charge : 0,
-                          advance_payment: 0,
-                          adults: 1,
-                          children: 0
-                        }));
-                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, false, manualBillData.bill_date);
-                        alert("Manual GST Bill generated and saved to All Bills history.");
-                        setShowManualBill(false);
-                      }}
-                      className="flex-1 h-14 bg-primary text-white rounded-2xl font-bold hover:bg-primary-hover transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20"
-                    >
-                      <FileText size={20} />
-                      GST Bill
-                    </button>
+                  <div className="flex flex-col gap-3 pt-4">
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={() => {
+                          const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
+                          const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
+                            id: Date.now() + idx,
+                            booking_id: bookingId,
+                            invoice_id: manualInvoiceId || undefined,
+                            guest_name: manualBillData.guest_name,
+                            guest_phone: manualBillData.guest_phone,
+                            guest_email: manualBillData.guest_email,
+                            guest_address: manualBillData.guest_address,
+                            guest_gst: manualBillData.guest_gst,
+                            company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
+                            company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
+                            room_number: room.room_number,
+                            room_type: room.room_type,
+                            room_price: room.room_price,
+                            check_in: manualBillData.check_in,
+                            check_out: manualBillData.check_out,
+                            dsda_charge: idx === 0 ? manualBillData.dsda_charge : 0,
+                            advance_payment: 0,
+                            adults: 1,
+                            children: 0
+                          }));
+                          downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, false, manualBillData.bill_date);
+                          alert("Manual Normal Bill saved to All Bills history & downloaded.");
+                          const nextId = `MANUAL-${Date.now()}`;
+                          setManualBookingId(nextId);
+                          setManualInvoiceId(getInvoiceId({ booking_id: nextId, check_in: manualBillData.check_in, check_out: manualBillData.check_out }, manualBillData.bill_date));
+                          fetchBills();
+                        }}
+                        className="flex-1 h-14 bg-black/5 text-black rounded-2xl font-bold hover:bg-black/10 transition-all flex items-center justify-center gap-2"
+                      >
+                        <Printer size={20} />
+                        Save & Print Normal
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
+                          const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
+                            id: Date.now() + idx,
+                            booking_id: bookingId,
+                            invoice_id: manualInvoiceId || undefined,
+                            guest_name: manualBillData.guest_name,
+                            guest_phone: manualBillData.guest_phone,
+                            guest_email: manualBillData.guest_email,
+                            guest_address: manualBillData.guest_address,
+                            guest_gst: manualBillData.guest_gst,
+                            company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
+                            company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
+                            room_number: room.room_number,
+                            room_type: room.room_type,
+                            room_price: room.room_price,
+                            check_in: manualBillData.check_in,
+                            check_out: manualBillData.check_out,
+                            dsda_charge: idx === 0 ? manualBillData.dsda_charge : 0,
+                            advance_payment: 0,
+                            adults: 1,
+                            children: 0
+                          }));
+                          generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, false, manualBillData.bill_date);
+                          alert("Manual GST Bill saved to All Bills history & downloaded.");
+                          const nextId = `MANUAL-${Date.now()}`;
+                          setManualBookingId(nextId);
+                          setManualInvoiceId(getInvoiceId({ booking_id: nextId, check_in: manualBillData.check_in, check_out: manualBillData.check_out }, manualBillData.bill_date));
+                          fetchBills();
+                        }}
+                        className="flex-1 h-14 bg-primary text-white rounded-2xl font-bold hover:bg-primary-hover transition-all flex items-center justify-center gap-2 shadow-lg shadow-primary/20"
+                      >
+                        <FileText size={20} />
+                        Save & Print GST
+                      </button>
+                    </div>
+
+                    <div className="flex gap-3">
+                      <button 
+                        onClick={() => {
+                          const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
+                          const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
+                            id: Date.now() + idx,
+                            booking_id: bookingId,
+                            invoice_id: manualInvoiceId || undefined,
+                            guest_name: manualBillData.guest_name,
+                            guest_phone: manualBillData.guest_phone,
+                            guest_email: manualBillData.guest_email,
+                            guest_address: manualBillData.guest_address,
+                            guest_gst: manualBillData.guest_gst,
+                            company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
+                            company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
+                            room_number: room.room_number,
+                            room_type: room.room_type,
+                            room_price: room.room_price,
+                            check_in: manualBillData.check_in,
+                            check_out: manualBillData.check_out,
+                            dsda_charge: idx === 0 ? manualBillData.dsda_charge : 0,
+                            advance_payment: 0,
+                            adults: 1,
+                            children: 0
+                          }));
+                          downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, manualBillData.bill_date);
+                          alert("Manual Normal Bill saved to All Bills history (without download).");
+                          const nextId = `MANUAL-${Date.now()}`;
+                          setManualBookingId(nextId);
+                          setManualInvoiceId(getInvoiceId({ booking_id: nextId, check_in: manualBillData.check_in, check_out: manualBillData.check_out }, manualBillData.bill_date));
+                          fetchBills();
+                        }}
+                        className="flex-1 h-12 bg-black/5 text-black/70 rounded-xl font-semibold hover:bg-black/10 transition-all flex items-center justify-center gap-2 text-sm"
+                      >
+                        Save Normal (No Download)
+                      </button>
+                      <button 
+                        onClick={() => {
+                          const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
+                          const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
+                            id: Date.now() + idx,
+                            booking_id: bookingId,
+                            invoice_id: manualInvoiceId || undefined,
+                            guest_name: manualBillData.guest_name,
+                            guest_phone: manualBillData.guest_phone,
+                            guest_email: manualBillData.guest_email,
+                            guest_address: manualBillData.guest_address,
+                            guest_gst: manualBillData.guest_gst,
+                            company_name: manualBillData.show_company ? manualBillData.company_name : undefined,
+                            company_address: manualBillData.show_company ? manualBillData.company_address : undefined,
+                            room_number: room.room_number,
+                            room_type: room.room_type,
+                            room_price: room.room_price,
+                            check_in: manualBillData.check_in,
+                            check_out: manualBillData.check_out,
+                            dsda_charge: idx === 0 ? manualBillData.dsda_charge : 0,
+                            advance_payment: 0,
+                            adults: 1,
+                            children: 0
+                          }));
+                          generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, manualBillData.bill_date);
+                          alert("Manual GST Bill saved to All Bills history (without download).");
+                          const nextId = `MANUAL-${Date.now()}`;
+                          setManualBookingId(nextId);
+                          setManualInvoiceId(getInvoiceId({ booking_id: nextId, check_in: manualBillData.check_in, check_out: manualBillData.check_out }, manualBillData.bill_date));
+                          fetchBills();
+                        }}
+                        className="flex-1 h-12 bg-primary/10 text-primary rounded-xl font-semibold hover:bg-primary/20 transition-all flex items-center justify-center gap-2 text-sm"
+                      >
+                        Save GST (No Download)
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
