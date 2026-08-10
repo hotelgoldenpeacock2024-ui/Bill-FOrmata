@@ -566,6 +566,8 @@ export default function App() {
   const [selectedBillMonth, setSelectedBillMonth] = useState<string>(getLocalDateString().slice(0, 7));
   const [showManualBill, setShowManualBill] = useState(false);
   const [manualBillQRCode, setManualBillQRCode] = useState('');
+  const [manualBookingId, setManualBookingId] = useState('');
+  const [manualInvoiceId, setManualInvoiceId] = useState('');
   const [manualBillData, setManualBillData] = useState({
     guest_name: '',
     guest_phone: '',
@@ -762,6 +764,26 @@ export default function App() {
       setManualBillQRCode('');
     }
   }, [manualBillData, showManualBill, hotelSettings.hotel_name]);
+
+  useEffect(() => {
+    if (showManualBill) {
+      let bId = manualBookingId;
+      if (!bId) {
+        bId = `MANUAL-${Date.now()}`;
+        setManualBookingId(bId);
+      }
+      const mockBooking = {
+        booking_id: bId,
+        check_in: manualBillData.check_in,
+        check_out: manualBillData.check_out,
+      };
+      const invId = getInvoiceId(mockBooking, manualBillData.bill_date);
+      setManualInvoiceId(invId);
+    } else {
+      setManualBookingId('');
+      setManualInvoiceId('');
+    }
+  }, [showManualBill, manualBillData.bill_date, manualBillData.check_in, manualBillData.check_out, manualBookingId, allBills]);
   
   const [newRoom, setNewRoom] = useState({
     room_number: '',
@@ -909,6 +931,7 @@ export default function App() {
     const rooms = JSON.parse(bill.rooms_data || '[]');
     const fakeBooking: any = {
       booking_id: bill.booking_id || bill.invoice_id,
+      invoice_id: bill.invoice_id,
       guest_name: bill.guest_name,
       guest_phone: bill.guest_phone,
       guest_email: bill.guest_email,
@@ -1504,9 +1527,11 @@ export default function App() {
     });
 
     // Room Details
-    const roomRows = lastBookedRooms.map(r => {
+    const roomRows = lastBookedRooms.map((r, idx) => {
       const price = lastBookingDetails.bookedPrices[r.id] || r.price;
       return [
+        (idx + 1).toString(),
+        r.room_number || 'N/A',
         r.type,
         nights.toString(),
         `Rs. ${price}`,
@@ -1516,7 +1541,7 @@ export default function App() {
 
     autoTable(doc, {
       startY: (doc as any).lastAutoTable.finalY + 15,
-      head: [['Type', 'Days', 'Price', 'Total']],
+      head: [['S.No.', 'Room No', 'Type', 'Days', 'Price', 'Total']],
       body: roomRows,
       headStyles: { fillColor: primaryColor }
     });
@@ -1760,6 +1785,12 @@ export default function App() {
   const getInvoiceId = (booking: any, customDate?: string | Date) => {
     if (booking.invoice_id) return booking.invoice_id; // Use existing if available
     
+    // Check if there is an existing bill saved for this booking_id
+    if (booking.booking_id) {
+      const existingBill = allBills.find(b => b.booking_id === booking.booking_id);
+      if (existingBill) return existingBill.invoice_id;
+    }
+    
     let year, month, monthCode;
     
     let dateStr = typeof customDate === 'string' ? customDate.split('T')[0] : '';
@@ -1937,8 +1968,10 @@ export default function App() {
       doc.text(`Plan: ${booking.plan || 'Only Room'}`, 120, 86);
 
       // Table
-      const roomRows = groupBookings.map(b => {
+      const roomRows = groupBookings.map((b, idx) => {
         return [
+          (idx + 1).toString(),
+          b.room_number || 'N/A',
           b.room_type,
           nights.toString(),
           `Rs. ${b.room_price}`,
@@ -1952,7 +1985,7 @@ export default function App() {
 
       autoTable(doc, {
         startY: startTableY,
-        head: [['Room Type', 'Nights', 'Price', 'Total']],
+        head: [['S.No.', 'Room No', 'Room Type', 'Nights', 'Price', 'Total']],
         body: roomRows,
         headStyles: { 
           fillColor: [250, 250, 250], 
@@ -2397,9 +2430,10 @@ export default function App() {
     const nights = calculateNights(booking.check_in, booking.check_out);
     const additionalCharge = includeAdditionalCharges ? (booking.dsda_charge || 0) : 0;
     
-    const roomRows = groupBookings.map(b => {
+    const roomRows = groupBookings.map((b, idx) => {
       const roomTotal = b.room_price * nights;
       return [
+        (idx + 1).toString(),
         `Room Accommodation (#${b.room_number} - ${b.room_type})`,
         '996311',
         nights.toString(),
@@ -2545,7 +2579,14 @@ export default function App() {
     // Table
     const tableBody = [...roomRows];
     if (includeAdditionalCharges && additionalCharge > 0) {
-      tableBody.push([hotelSettings.additional_charge_name || 'Additional Charge', '996311', '1', `Rs. ${additionalCharge}`, `Rs. ${additionalCharge}`]);
+      tableBody.push([
+        (roomRows.length + 1).toString(),
+        hotelSettings.additional_charge_name || 'Additional Charge',
+        '996311',
+        '1',
+        `Rs. ${additionalCharge}`,
+        `Rs. ${additionalCharge}`
+      ]);
     }
 
     let startTableY = 95;
@@ -2554,7 +2595,7 @@ export default function App() {
 
     autoTable(doc, {
       startY: startTableY,
-      head: [['Description', 'SAC/HSN', 'Qty/Days', 'Rate', 'Amount']],
+      head: [['S.No.', 'Description', 'SAC/HSN', 'Qty/Days', 'Rate', 'Amount']],
       body: tableBody,
       headStyles: { 
         fillColor: [250, 250, 250], 
@@ -5848,6 +5889,40 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                 </div>
 
                 <div className="space-y-6">
+                  {/* Pre-calculated Invoice ID & Month Selector */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="p-4 rounded-2xl bg-primary/5 border border-primary/10 flex items-center justify-between">
+                      <div>
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-primary">Invoice Number</div>
+                        <div className="text-base font-mono font-bold text-black">{manualInvoiceId || 'Calculating...'}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-black/40">Status</div>
+                        <div className="text-xs font-semibold text-primary bg-primary/10 px-2.5 py-0.5 rounded-full inline-block">Sequential</div>
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-2xl bg-black/5 border border-black/5 flex flex-col justify-center">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 mb-1">Select Billing Month (Back-date)</label>
+                      <input 
+                        type="month"
+                        value={manualBillData.bill_date ? manualBillData.bill_date.slice(0, 7) : getLocalDateString().slice(0, 7)}
+                        onChange={(e) => {
+                          const m = e.target.value; // YYYY-MM
+                          if (m) {
+                            setManualBillData({
+                              ...manualBillData, 
+                              bill_date: `${m}-01`,
+                              check_in: `${m}-01`,
+                              check_out: `${m}-02`
+                            });
+                          }
+                        }}
+                        className="w-full h-10 px-3 rounded-xl bg-white border border-black/10 focus:border-primary focus:ring-0 transition-all outline-none font-semibold text-sm"
+                      />
+                    </div>
+                  </div>
+
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Guest GST Number</label>
@@ -6010,77 +6085,89 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                       </button>
                     </div>
                     {manualBillData.rooms.map((room, index) => (
-                      <div key={index} className="p-4 rounded-2xl bg-black/5 space-y-4 relative">
-                        {manualBillData.rooms.length > 1 && (
-                          <button 
-                            onClick={() => {
-                              const newRooms = manualBillData.rooms.filter((_, i) => i !== index);
-                              setManualBillData({...manualBillData, rooms: newRooms});
-                            }}
-                            className="absolute top-2 right-2 p-1 text-black/20 hover:text-red-500 transition-all"
-                          >
-                            <X size={14} />
-                          </button>
-                        )}
-                          <div className="grid grid-cols-4 gap-4">
-                            <div className="space-y-2">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Room No</label>
-                              <input 
-                                type="text"
-                                value={room.room_number}
-                                onChange={(e) => {
-                                  const newRooms = [...manualBillData.rooms];
-                                  newRooms[index].room_number = e.target.value;
-                                  setManualBillData({...manualBillData, rooms: newRooms});
-                                }}
-                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Type</label>
-                              <input 
-                                type="text"
-                                value={room.room_type}
-                                onChange={(e) => {
-                                  const newRooms = [...manualBillData.rooms];
-                                  newRooms[index].room_type = e.target.value;
-                                  setManualBillData({...manualBillData, rooms: newRooms});
-                                }}
-                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Total Fare (Incl. GST)</label>
-                              <input 
-                                type="number"
-                                placeholder="Total"
-                                onChange={(e) => {
-                                  const totalFare = parseFloat(e.target.value) || 0;
-                                  let basePrice = totalFare;
-                                  if (totalFare >= 8850) basePrice = totalFare / 1.18;
-                                  else if (totalFare >= 1050) basePrice = totalFare / 1.05;
-                                  
-                                  const newRooms = [...manualBillData.rooms];
-                                  newRooms[index].room_price = parseFloat(basePrice.toFixed(2));
-                                  setManualBillData({...manualBillData, rooms: newRooms});
-                                }}
-                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                              />
-                            </div>
-                            <div className="space-y-2">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Base Price</label>
-                              <input 
-                                type="number"
-                                value={room.room_price}
-                                onChange={(e) => {
-                                  const newRooms = [...manualBillData.rooms];
-                                  newRooms[index].room_price = parseFloat(e.target.value) || 0;
-                                  setManualBillData({...manualBillData, rooms: newRooms});
-                                }}
-                                className="w-full h-10 px-3 rounded-lg bg-white border-transparent focus:border-primary focus:ring-0 transition-all outline-none text-sm"
-                              />
-                            </div>
+                      <div key={index} className="p-5 rounded-2xl bg-black/5 border border-black/5 space-y-4 relative">
+                        <div className="flex justify-between items-center pb-2 border-b border-black/5">
+                          <span className="text-xs font-bold text-primary bg-primary/10 px-2.5 py-0.5 rounded-md">
+                            Room #{index + 1}
+                          </span>
+                          {manualBillData.rooms.length > 1 && (
+                            <button 
+                              onClick={() => {
+                                const newRooms = manualBillData.rooms.filter((_, i) => i !== index);
+                                setManualBillData({...manualBillData, rooms: newRooms});
+                              }}
+                              className="p-1 text-black/40 hover:text-red-500 transition-all flex items-center gap-1 text-xs font-bold"
+                            >
+                              <X size={14} /> Remove Room
+                            </button>
+                          )}
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Room No</label>
+                            <input 
+                              type="text"
+                              placeholder="e.g. 101"
+                              value={room.room_number}
+                              onChange={(e) => {
+                                const newRooms = [...manualBillData.rooms];
+                                newRooms[index].room_number = e.target.value;
+                                setManualBillData({...manualBillData, rooms: newRooms});
+                              }}
+                              className="w-full h-11 px-3.5 rounded-xl bg-white border border-black/10 focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                            />
                           </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40">Room Type</label>
+                            <input 
+                              type="text"
+                              placeholder="e.g. Deluxe Room"
+                              value={room.room_type}
+                              onChange={(e) => {
+                                const newRooms = [...manualBillData.rooms];
+                                newRooms[index].room_type = e.target.value;
+                                setManualBillData({...manualBillData, rooms: newRooms});
+                              }}
+                              className="w-full h-11 px-3.5 rounded-xl bg-white border border-black/10 focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 font-semibold text-primary">Total Fare (Incl. GST)</label>
+                            <input 
+                              type="number"
+                              placeholder="Enter total fare"
+                              onChange={(e) => {
+                                const totalFare = parseFloat(e.target.value) || 0;
+                                let basePrice = totalFare;
+                                if (totalFare >= 8850) basePrice = totalFare / 1.18;
+                                else if (totalFare >= 1050) basePrice = totalFare / 1.05;
+                                
+                                const newRooms = [...manualBillData.rooms];
+                                newRooms[index].room_price = parseFloat(basePrice.toFixed(2));
+                                setManualBillData({...manualBillData, rooms: newRooms});
+                              }}
+                              className="w-full h-11 px-3.5 rounded-xl bg-white border border-primary/20 focus:border-primary focus:ring-0 transition-all outline-none text-sm font-semibold"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-black/40 font-semibold">Base Price (Per Night)</label>
+                            <input 
+                              type="number"
+                              placeholder="Base rate"
+                              value={room.room_price || ''}
+                              onChange={(e) => {
+                                const newRooms = [...manualBillData.rooms];
+                                newRooms[index].room_price = parseFloat(e.target.value) || 0;
+                                setManualBillData({...manualBillData, rooms: newRooms});
+                              }}
+                              className="w-full h-11 px-3.5 rounded-xl bg-white border border-black/10 focus:border-primary focus:ring-0 transition-all outline-none text-sm"
+                            />
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -6122,10 +6209,11 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                   <div className="flex gap-4 pt-4">
                     <button 
                       onClick={() => {
-                        const bookingId = `MANUAL-${Date.now()}`;
+                        const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
                         const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
                           id: Date.now() + idx,
                           booking_id: bookingId,
+                          invoice_id: manualInvoiceId || undefined,
                           guest_name: manualBillData.guest_name,
                           guest_phone: manualBillData.guest_phone,
                           guest_email: manualBillData.guest_email,
@@ -6143,7 +6231,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, manualBillData.bill_date);
+                        downloadReceiptForBooking(mockBookings[0], manualBillData.include_dsda, mockBookings, false, false, manualBillData.bill_date);
                         alert("Manual Normal Bill generated and saved to All Bills history.");
                         setShowManualBill(false);
                       }}
@@ -6154,10 +6242,11 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </button>
                     <button 
                       onClick={() => {
-                        const bookingId = `MANUAL-${Date.now()}`;
+                        const bookingId = manualBookingId || `MANUAL-${Date.now()}`;
                         const mockBookings: any[] = manualBillData.rooms.map((room, idx) => ({
                           id: Date.now() + idx,
                           booking_id: bookingId,
+                          invoice_id: manualInvoiceId || undefined,
                           guest_name: manualBillData.guest_name,
                           guest_phone: manualBillData.guest_phone,
                           guest_email: manualBillData.guest_email,
@@ -6175,7 +6264,7 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           adults: 1,
                           children: 0
                         }));
-                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, true, manualBillData.bill_date);
+                        generateGSTBillPDF(mockBookings[0], manualBillData.include_dsda, mockBookings, false, false, manualBillData.bill_date);
                         alert("Manual GST Bill generated and saved to All Bills history.");
                         setShowManualBill(false);
                       }}

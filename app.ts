@@ -789,6 +789,35 @@ apiRouter.post("/bills", async (req, res) => {
   const billData = req.body;
   try {
     const supabase = getSupabase();
+    
+    // If invoice_id is provided, check if a bill with that invoice_id already exists.
+    if (billData.invoice_id) {
+      const { data: existing, error: findError } = await supabase
+        .from("bills")
+        .select("id")
+        .eq("invoice_id", billData.invoice_id)
+        .maybeSingle();
+        
+      if (!findError && existing) {
+        // Update existing bill with new data (updates type, total, room details etc.)
+        const { data: updatedData, error: updateError } = await supabase
+          .from("bills")
+          .update(billData)
+          .eq("id", existing.id)
+          .select();
+          
+        if (updateError) throw updateError;
+        
+        if (billData.booking_id) {
+          await supabase.from("bookings").update({ is_billed: true }).eq("booking_id", billData.booking_id);
+        }
+        
+        broadcast({ type: 'BILLS_UPDATED' });
+        broadcast({ type: 'BOOKING_UPDATED' });
+        return res.json({ success: true, data: updatedData[0] });
+      }
+    }
+    
     const { data, error } = await supabase.from("bills").insert([billData]).select();
     if (error) {
       if (error.message.includes("Could not find the table")) {
