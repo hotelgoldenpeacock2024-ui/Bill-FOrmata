@@ -1492,7 +1492,16 @@ apiRouter.get("/cron/whatsapp-reminders", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized cron trigger." });
   }
 
-  const targetPhone = process.env.WHATSAPP_RECIPIENT_PHONE || "8777264725";
+  let targetPhone = process.env.WHATSAPP_RECIPIENT_PHONE || "8777264725";
+  try {
+    const config = await getWhatsAppConfig();
+    if (config && config.recipientPhone) {
+      targetPhone = config.recipientPhone;
+    }
+  } catch (confErr) {
+    console.warn("Failed to load WhatsApp config inside cron, falling back:", confErr);
+  }
+
   const targetDateStr = new Date(new Date().getTime() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0];
 
   try {
@@ -1509,10 +1518,30 @@ apiRouter.get("/cron/whatsapp-reminders", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Cron automated reminder error:", err);
+    let errorMsg = err.message || "Cron WhatsApp execution failed";
+    const details = err.response?.data || {};
+
+    if (err.response?.data?.error) {
+      const metaError = err.response.data.error;
+      const code = metaError.code;
+      const rawMessage = metaError.message || "";
+      errorMsg = `Meta API Error: ${rawMessage}`;
+
+      if (code === 131030) {
+        errorMsg = `WhatsApp 24-Hour Customer Window Rule: Standard text summaries can only be sent if you first send any message to your WhatsApp Business phone number from your phone within the last 24 hours. Please send a message (e.g. "hi") to the number from your WhatsApp app, then try sending again!`;
+      } else if (code === 100 && (rawMessage.includes("param") || rawMessage.includes("phone"))) {
+        errorMsg = `Meta API Parameter Error: Check that the recipient phone number is correct, contains the proper country code (e.g. 91xxxxxxxxxx for India) without '+' or space, and that it has been added to your WhatsApp Sandbox's Allowed Numbers in the Meta Developer Console.`;
+      } else if (code === 190) {
+        errorMsg = `Meta Access Token Expired/Invalid: Your Meta System User Access Token has expired or is invalid. Please generate a new, permanent (never-expiring) token in your Meta Business Settings.`;
+      } else if (code === 200 || rawMessage.includes("permission") || rawMessage.includes("permissions") || rawMessage.includes("system user")) {
+        errorMsg = `Meta Permission Denied: Your System User Access Token lacks permissions. Please go to Meta Business Settings -> System Users -> select your user -> click "Add Assets" -> select "Apps" -> choose your app -> check "Full Control" or "Manage App" and save. Then generate a new token.`;
+      }
+    }
+
     return res.status(500).json({
       success: false,
-      error: err.message || "Cron WhatsApp execution failed",
-      details: err.response?.data || {}
+      error: errorMsg,
+      details: details
     });
   }
 });
