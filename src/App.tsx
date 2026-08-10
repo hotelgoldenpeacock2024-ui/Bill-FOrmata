@@ -44,11 +44,11 @@ import {
   HelpCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI, Type } from "@google/genai";
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
+import QRCode from 'qrcode';
 
 const getBase64ImageFromURL = (url: string): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -357,15 +357,59 @@ export default function App() {
   // Telegram Reminders Configuration States
   const [tgToken, setTgToken] = useState(localStorage.getItem('tg_token') || '');
   const [tgChatId, setTgChatId] = useState(localStorage.getItem('tg_chat_id') || '');
+  const [tgForwardToWa, setTgForwardToWa] = useState<boolean>(localStorage.getItem('tg_forward_to_wa') !== 'false');
   const [tgSendingTest, setTgSendingTest] = useState(false);
   const [tgSendingDaily, setTgSendingDaily] = useState(false);
   const [tgStatusMessage, setTgStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  const handleSaveTgSettings = () => {
+  const handleSaveTgSettings = async () => {
     localStorage.setItem('tg_token', tgToken);
     localStorage.setItem('tg_chat_id', tgChatId);
-    setTgStatusMessage({ type: 'success', text: 'Telegram Bot token & Chat ID saved in browser local storage successfully!' });
-    setTimeout(() => setTgStatusMessage(null), 4000);
+    localStorage.setItem('tg_forward_to_wa', String(tgForwardToWa));
+    
+    setTgStatusMessage({ type: 'success', text: 'Saving Telegram keys to database & registering auto-reply webhook...' });
+    
+    try {
+      // Save keys in database
+      const settingsRes = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tg_token: tgToken,
+          tg_chat_id: tgChatId,
+          tg_forward_to_wa: String(tgForwardToWa)
+        })
+      });
+      const settingsData = await settingsRes.json();
+      
+      if (!settingsData.success) {
+        setTgStatusMessage({ type: 'error', text: `Saved locally, but failed to save in Database: ${settingsData.error}` });
+        return;
+      }
+      
+      // Auto-register webhook with Telegram
+      const webhookRes = await fetch('/api/telegram/setup-webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: tgToken })
+      });
+      const webhookData = await webhookRes.json();
+      
+      if (webhookData.success) {
+        setTgStatusMessage({ 
+          type: 'success', 
+          text: 'Success! Telegram configurations saved and automated chat bot auto-reply activated! Send any message to your bot to test it.' 
+        });
+      } else {
+        setTgStatusMessage({ 
+          type: 'error', 
+          text: 'Saved configurations, but failed to register webhook with Telegram: ' + (webhookData.error || 'Check details.') 
+        });
+      }
+    } catch (err: any) {
+      setTgStatusMessage({ type: 'error', text: `Failed to register online: ${err.message || err}` });
+    }
+    setTimeout(() => setTgStatusMessage(null), 8000);
   };
 
   const handleTestTelegram = async () => {
@@ -521,6 +565,7 @@ export default function App() {
   const [customPrices, setCustomPrices] = useState<Record<number, number>>({});
   const [selectedBillMonth, setSelectedBillMonth] = useState<string>(getLocalDateString().slice(0, 7));
   const [showManualBill, setShowManualBill] = useState(false);
+  const [manualBillQRCode, setManualBillQRCode] = useState('');
   const [manualBillData, setManualBillData] = useState({
     guest_name: '',
     guest_phone: '',
@@ -583,8 +628,16 @@ export default function App() {
     const checkGstStatus = async () => {
       try {
         const res = await fetch('/api/gst-status');
-        const data = await res.json();
-        setGstConfig(data);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          setGstConfig(data);
+        } catch (e) {
+          console.warn("GST status response was not valid JSON:", text);
+        }
       } catch (error) {
         console.error("Error checking GST status", error);
       }
@@ -592,9 +645,18 @@ export default function App() {
     const checkHealth = async () => {
       try {
         const res = await fetch('/api/health');
-        const data = await res.json();
-        setIsNetlify(!!data.isNetlify);
-        setIsConnected(data.status === 'ok');
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        const text = await res.text();
+        try {
+          const data = JSON.parse(text);
+          setIsNetlify(!!data.isNetlify);
+          setIsConnected(data.status === 'ok');
+        } catch (e) {
+          console.warn("Health check response was not valid JSON:", text);
+          setIsConnected(false);
+        }
       } catch (error) {
         console.error("Error checking health", error);
         setIsConnected(false);
@@ -651,63 +713,15 @@ export default function App() {
           }));
         }
       } else {
-        // If backend returns error or success: false, try AI Lookup
-        console.log("Backend GST fetch failed or inactive, trying AI lookup...");
-        await fetchGSTWithAI(gstin, target);
+        console.log("Backend GST fetch failed or inactive.", data?.error);
+        const errMsg = data?.error || "Could not fetch GST details automatically. Please enter manually or check the GSTIN.";
+        alert(errMsg);
       }
     } catch (error) {
       console.error("GST Fetch error", error);
-      // Try AI as last resort if network error to backend
-      await fetchGSTWithAI(gstin, target);
-    } finally {
-      setFetchingGST(false);
-    }
-  };
-
-  const fetchGSTWithAI = async (gstin: string, target: 'booking' | 'manual') => {
-    setFetchingAI(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: (process.env as any).GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: `Find the legal business name and the principal place of business (full address) for the Indian GST number: ${gstin}. Search the web if needed.`,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              name: { type: Type.STRING },
-              address: { type: Type.STRING }
-            },
-            required: ["name", "address"]
-          },
-          tools: [{ googleSearch: {} }]
-        }
-      });
-
-      const result = JSON.parse(response.text);
-      if (result.name && result.address) {
-        // Cache the AI result too
-        localStorage.setItem(`gst_cache_${gstin}`, JSON.stringify({ name: result.name, address: result.address }));
-        
-        if (target === 'booking') {
-          setGuestName(result.name);
-          setGuestAddress(result.address);
-        } else {
-          setManualBillData(prev => ({
-            ...prev,
-            guest_name: result.name,
-            guest_address: result.address
-          }));
-        }
-      } else {
-        throw new Error("AI could not find details");
-      }
-    } catch (error) {
-      console.error("AI GST Fetch error", error);
       alert("Could not fetch GST details. Please enter manually or check the GSTIN.");
     } finally {
-      setFetchingAI(false);
+      setFetchingGST(false);
     }
   };
 
@@ -732,6 +746,22 @@ export default function App() {
     state_code: '19' // Default to West Bengal or similar
   });
   const [updatingSettings, setUpdatingSettings] = useState(false);
+
+  useEffect(() => {
+    if (!showManualBill) return;
+    const nights = calculateNights(manualBillData.check_in, manualBillData.check_out);
+    const subtotal = manualBillData.rooms.reduce((acc, curr) => acc + ((curr.room_price || 0) * nights), 0);
+    const dsda = manualBillData.include_dsda ? (manualBillData.dsda_charge || 0) : 0;
+    const total = Math.round(subtotal + dsda);
+    if (total > 0) {
+      const upiUrl = `upi://pay?pa=9836264725@okbizaxis&pn=${encodeURIComponent(hotelSettings.hotel_name || 'Golden Peacock Hotel')}&am=${total}&cu=INR`;
+      QRCode.toDataURL(upiUrl, { margin: 1, width: 160 })
+        .then(url => setManualBillQRCode(url))
+        .catch(err => console.error("Error generating live UPI QR code:", err));
+    } else {
+      setManualBillQRCode('');
+    }
+  }, [manualBillData, showManualBill, hotelSettings.hotel_name]);
   
   const [newRoom, setNewRoom] = useState({
     room_number: '',
@@ -782,32 +812,57 @@ export default function App() {
     }
   }, [checkIn, checkOut, roomNumber]);
 
+  const safeFetchJson = async (url: string, options?: RequestInit) => {
+    try {
+      const res = await fetch(url, options);
+      const contentType = res.headers.get("content-type") || "";
+      if (!res.ok) {
+        if (contentType.includes("application/json")) {
+          const data = await res.json();
+          throw new Error(data.error || `HTTP ${res.status}`);
+        } else {
+          const text = await res.text();
+          throw new Error(text || `HTTP ${res.status}`);
+        }
+      }
+      if (contentType.includes("application/json")) {
+        return await res.json();
+      }
+      const text = await res.text();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    } catch (e: any) {
+      throw new Error(e.message || String(e));
+    }
+  };
+
   const fetchRooms = async () => {
     try {
-      const res = await fetch('/api/rooms');
-      const data = await res.json();
-      if (data.error) {
+      const data = await safeFetchJson('/api/rooms');
+      if (data && data.error) {
         setDbError(data.error);
         return;
       }
       setRooms(Array.isArray(data) ? data : []);
       setDbError(null);
-    } catch (error) {
-      console.error("Error fetching rooms:", error);
+    } catch (error: any) {
+      console.error("Error fetching rooms:", error.message || error);
     }
   };
 
   const fetchBills = async () => {
     try {
-      const res = await fetch('/api/bills');
-      const data = await res.json();
-      if (data.error) {
+      const data = await safeFetchJson('/api/bills');
+      if (data && data.error) {
         console.error("Server error fetching bills:", data.error);
         return;
       }
       setAllBills(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error("Network or parsing error fetching bills:", error);
+    } catch (error: any) {
+      console.error("Network or parsing error fetching bills:", error.message || error);
     }
   };
 
@@ -964,15 +1019,14 @@ export default function App() {
 
   const fetchGuests = async () => {
     try {
-      const res = await fetch('/api/guests');
-      const data = await res.json();
-      if (data.error) {
+      const data = await safeFetchJson('/api/guests');
+      if (data && data.error) {
         setDbError(data.error);
         return;
       }
       setGuests(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error("Error fetching guests:", error);
+    } catch (error: any) {
+      console.error("Error fetching guests:", error.message || error);
     }
   };
 
@@ -984,9 +1038,8 @@ export default function App() {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch('/api/settings');
-      const data = await res.json();
-      if (data.error) {
+      const data = await safeFetchJson('/api/settings');
+      if (data && data.error) {
         setDbError(data.error);
         return;
       }
@@ -1000,26 +1053,29 @@ export default function App() {
       if (data.wa_twilio_number) setWaTwilioNumber(data.wa_twilio_number);
       if (data.wa_meta_phone_id) setWaMetaPhoneId(data.wa_meta_phone_id);
       if (data.wa_meta_token) setWaMetaToken(data.wa_meta_token);
-    } catch (error) {
-      console.error("Error fetching settings:", error);
+
+      // Load Telegram settings from DB if present
+      if (data.tg_token) setTgToken(data.tg_token);
+      if (data.tg_chat_id) setTgChatId(data.tg_chat_id);
+      if (data.tg_forward_to_wa) setTgForwardToWa(data.tg_forward_to_wa === 'true');
+    } catch (error: any) {
+      console.error("Error fetching settings:", error.message || error);
     }
   };
 
   const fetchGuestBookings = async (name: string) => {
     try {
-      const res = await fetch(`/api/guests/${encodeURIComponent(name)}/bookings`);
-      const data = await res.json();
+      const data = await safeFetchJson(`/api/guests/${encodeURIComponent(name)}/bookings`);
       setGuestBookings(data);
-    } catch (error) {
-      console.error("Error fetching guest bookings:", error);
+    } catch (error: any) {
+      console.error("Error fetching guest bookings:", error.message || error);
     }
   };
 
   const fetchBookings = async () => {
     try {
-      const res = await fetch('/api/bookings');
-      const data = await res.json();
-      if (data.error) {
+      const data = await safeFetchJson('/api/bookings');
+      if (data && data.error) {
         let errorMessage = data.error;
         if (typeof data.error === 'string' && data.error.startsWith('{')) {
           try {
@@ -1033,8 +1089,8 @@ export default function App() {
         return;
       }
       setAllBookings(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error("Error fetching bookings:", error);
+    } catch (error: any) {
+      console.error("Error fetching bookings:", error.message || error);
     }
   };
 
@@ -1343,10 +1399,32 @@ export default function App() {
 
   const generatePDFReceipt = async () => {
     if (!lastBookingDetails) return;
-    const doc = new jsPDF();
     const dsdaCharge = lastBookingDetails.dsdaCharge || 0;
     const advancePayment = lastBookingDetails.advancePayment || 0;
     const nights = calculateNights(lastBookingDetails.checkIn, lastBookingDetails.checkOut);
+    const subtotal = lastBookedRooms.reduce((acc, curr) => acc + ((lastBookingDetails.bookedPrices[curr.id] || curr.price) * nights), 0);
+    const total = subtotal + dsdaCharge;
+    const balance = total - advancePayment;
+    const upiAmount = balance > 0 ? balance : total;
+
+    let qrCodeBase64 = '';
+    if (upiAmount > 0) {
+      try {
+        const upiUrl = `upi://pay?pa=9836264725@okbizaxis&pn=${encodeURIComponent(hotelSettings.hotel_name || 'Golden Peacock Hotel')}&am=${upiAmount}&cu=INR`;
+        qrCodeBase64 = await QRCode.toDataURL(upiUrl, {
+          margin: 1,
+          width: 200,
+          color: {
+            dark: '#000000',
+            light: '#ffffff'
+          }
+        });
+      } catch (err) {
+        console.error("Failed to generate UPI QR code:", err);
+      }
+    }
+
+    const doc = new jsPDF();
     
     const themeColors: Record<string, string> = {
       emerald: '#059669',
@@ -1445,9 +1523,6 @@ export default function App() {
 
     // Summary
     const finalY = (doc as any).lastAutoTable.finalY + 15;
-    const subtotal = lastBookedRooms.reduce((acc, curr) => acc + ((lastBookingDetails.bookedPrices[curr.id] || curr.price) * nights), 0);
-    const total = subtotal + dsdaCharge;
-    const balance = total - advancePayment;
 
     doc.setFontSize(10);
     doc.text('Subtotal:', 140, finalY);
@@ -1474,6 +1549,21 @@ export default function App() {
     doc.text('Balance Due:', 140, finalY + 35);
     doc.text(`Rs. ${balance.toFixed(2)}`, 175, finalY + 35);
 
+    // Draw UPI QR Code on the bottom-left if available
+    if (qrCodeBase64) {
+      doc.addImage(qrCodeBase64, 'PNG', 20, finalY, 30, 30);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 50, 50);
+      doc.text('SCAN TO PAY (UPI)', 55, finalY + 8);
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Amount: Rs. ${upiAmount}`, 55, finalY + 14);
+      doc.text(`UPI ID: 9836264725@okbizaxis`, 55, finalY + 20);
+      doc.text(`Golden Peacock Hotel`, 55, finalY + 26);
+    }
+
     // Footer
     doc.setFontSize(10);
     doc.setTextColor(150, 150, 150);
@@ -1493,10 +1583,32 @@ export default function App() {
       groupBookings = [booking];
     }
     
-    const doc = new jsPDF();
     const dsdaCharge = booking.dsda_charge || 0;
     const advancePayment = booking.advance_payment || 0;
     const nights = calculateNights(booking.check_in, booking.check_out);
+    const subtotal = groupBookings.reduce((acc, curr) => acc + (curr.room_price * nights), 0);
+    const total = subtotal + dsdaCharge;
+    const balance = total - advancePayment;
+    const upiAmount = balance > 0 ? balance : total;
+
+    let qrCodeBase64 = '';
+    if (upiAmount > 0) {
+      try {
+        const upiUrl = `upi://pay?pa=9836264725@okbizaxis&pn=${encodeURIComponent(hotelSettings.hotel_name || 'Golden Peacock Hotel')}&am=${upiAmount}&cu=INR`;
+        qrCodeBase64 = await QRCode.toDataURL(upiUrl, {
+          margin: 1,
+          width: 200,
+          color: {
+            dark: '#000000',
+            light: '#ffffff'
+          }
+        });
+      } catch (err) {
+        console.error("Failed to generate UPI QR code:", err);
+      }
+    }
+
+    const doc = new jsPDF();
     
     const themeColors: Record<string, string> = {
       emerald: '#059669', indigo: '#4f46e5', rose: '#e11d48', amber: '#d97706', slate: '#475569'
@@ -1591,9 +1703,6 @@ export default function App() {
 
     // Summary
     const finalY = (doc as any).lastAutoTable.finalY + 15;
-    const subtotal = groupBookings.reduce((acc, curr) => acc + (curr.room_price * nights), 0);
-    const total = subtotal + dsdaCharge;
-    const balance = total - advancePayment;
 
     doc.setFontSize(10);
     doc.text('Subtotal:', 140, finalY);
@@ -1619,6 +1728,21 @@ export default function App() {
     doc.setFont('helvetica', 'bold');
     doc.text('Balance Due:', 140, finalY + 35);
     doc.text(`Rs. ${balance.toFixed(2)}`, 175, finalY + 35);
+
+    // Draw UPI QR Code on the bottom-left if available
+    if (qrCodeBase64) {
+      doc.addImage(qrCodeBase64, 'PNG', 20, finalY, 30, 30);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 50, 50);
+      doc.text('SCAN TO PAY (UPI)', 55, finalY + 8);
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Amount: Rs. ${upiAmount}`, 55, finalY + 14);
+      doc.text(`UPI ID: 9836264725@okbizaxis`, 55, finalY + 20);
+      doc.text(`Golden Peacock Hotel`, 55, finalY + 26);
+    }
 
     // Footer
     doc.setFontSize(10);
@@ -1703,6 +1827,24 @@ export default function App() {
     const subtotal = groupBookings.reduce((acc, curr) => acc + (curr.room_price * nights), 0);
     const total = Math.round(subtotal + dsdaCharge);
     const balance = Math.round(total - advancePayment);
+    const upiAmount = balance > 0 ? balance : total;
+
+    let qrCodeBase64 = '';
+    if (upiAmount > 0) {
+      try {
+        const upiUrl = `upi://pay?pa=9836264725@okbizaxis&pn=${encodeURIComponent(hotelSettings.hotel_name || 'Golden Peacock Hotel')}&am=${upiAmount}&cu=INR`;
+        qrCodeBase64 = await QRCode.toDataURL(upiUrl, {
+          margin: 1,
+          width: 200,
+          color: {
+            dark: '#000000',
+            light: '#ffffff'
+          }
+        });
+      } catch (err) {
+        console.error("Failed to generate UPI QR code:", err);
+      }
+    }
 
     // Save to DB
     if (!skipSave) {
@@ -1873,6 +2015,21 @@ export default function App() {
     drawRow('Advance Paid:', `Rs. ${advancePayment.toFixed(2)}`, currentY);
     currentY += 7;
     drawRow('BALANCE DUE:', `Rs. ${balance}`, currentY, true);
+
+    // Draw UPI QR Code on the bottom-left if available
+    if (qrCodeBase64) {
+      doc.addImage(qrCodeBase64, 'PNG', 20, finalY, 30, 30);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 50, 50);
+      doc.text('SCAN TO PAY (UPI)', 55, finalY + 8);
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Amount: Rs. ${upiAmount}`, 55, finalY + 14);
+      doc.text(`UPI ID: 9836264725@okbizaxis`, 55, finalY + 20);
+      doc.text(`Golden Peacock Hotel`, 55, finalY + 26);
+    }
 
     // Footer
     const footerY = 275;
@@ -2244,7 +2401,7 @@ export default function App() {
       const roomTotal = b.room_price * nights;
       return [
         `Room Accommodation (#${b.room_number} - ${b.room_type})`,
-        '9963',
+        '996311',
         nights.toString(),
         `Rs. ${b.room_price}`,
         `Rs. ${roomTotal}`
@@ -2276,6 +2433,24 @@ export default function App() {
     const totalWithTax = subtotal + cgstAmount + sgstAmount + igstAmount;
     const grandTotal = Math.round(totalWithTax);
     const roundOff = grandTotal - totalWithTax;
+    const upiAmount = grandTotal;
+
+    let qrCodeBase64 = '';
+    if (upiAmount > 0) {
+      try {
+        const upiUrl = `upi://pay?pa=9836264725@okbizaxis&pn=${encodeURIComponent(hotelSettings.hotel_name || 'Golden Peacock Hotel')}&am=${upiAmount}&cu=INR`;
+        qrCodeBase64 = await QRCode.toDataURL(upiUrl, {
+          margin: 1,
+          width: 200,
+          color: {
+            dark: '#000000',
+            light: '#ffffff'
+          }
+        });
+      } catch (err) {
+        console.error("Failed to generate UPI QR code:", err);
+      }
+    }
 
     // Save to DB
     if (!skipSave) {
@@ -2370,7 +2545,7 @@ export default function App() {
     // Table
     const tableBody = [...roomRows];
     if (includeAdditionalCharges && additionalCharge > 0) {
-      tableBody.push([hotelSettings.additional_charge_name || 'Additional Charge', '9963', '1', `Rs. ${additionalCharge}`, `Rs. ${additionalCharge}`]);
+      tableBody.push([hotelSettings.additional_charge_name || 'Additional Charge', '996311', '1', `Rs. ${additionalCharge}`, `Rs. ${additionalCharge}`]);
     }
 
     let startTableY = 95;
@@ -2450,6 +2625,21 @@ export default function App() {
     
     doc.setFontSize(12);
     drawRow('GRAND TOTAL:', `Rs. ${grandTotal}`, currentY + 2, true);
+
+    // Draw UPI QR Code on the bottom-left if available
+    if (qrCodeBase64) {
+      doc.addImage(qrCodeBase64, 'PNG', 20, finalY, 30, 30);
+      doc.setFontSize(8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(50, 50, 50);
+      doc.text('SCAN TO PAY (UPI)', 55, finalY + 8);
+      
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 100, 100);
+      doc.text(`Amount: Rs. ${upiAmount}`, 55, finalY + 14);
+      doc.text(`UPI ID: 9836264725@okbizaxis`, 55, finalY + 20);
+      doc.text(`Golden Peacock Hotel`, 55, finalY + 26);
+    }
 
     // Footer & Signature
     const footerY = 260;
@@ -4745,6 +4935,19 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                           <p className="text-[10px] text-black/40">Enter your numeric Telegram Chat ID or group chat ID.</p>
                         </div>
 
+                        <div className="flex items-center gap-2 pt-2">
+                          <input 
+                            id="tgForwardToWa"
+                            type="checkbox"
+                            checked={tgForwardToWa}
+                            onChange={(e) => setTgForwardToWa(e.target.checked)}
+                            className="w-4 h-4 text-indigo-600 focus:ring-indigo-500 border-black/10 rounded cursor-pointer"
+                          />
+                          <label htmlFor="tgForwardToWa" className="text-xs font-semibold text-gray-700 cursor-pointer select-none">
+                            🔄 Forward daily stay reports automatically to WhatsApp
+                          </label>
+                        </div>
+
                         <div className="pt-4 flex flex-col sm:flex-row gap-3">
                           <button
                             type="button"
@@ -4809,7 +5012,13 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                         </div>
 
                         <div className="pt-3 border-t border-gray-200">
-                          <p className="font-bold text-gray-900 mb-1">⏰ Daily Morning Telegram Cron Automation</p>
+                          <p className="font-bold text-gray-900 mb-1">💬 Instant Bot Auto-Reply (Easiest Option)</p>
+                          <p className="text-black/60">
+                            Simply send <span className="font-semibold text-indigo-700">any message</span> or a date like <span className="font-mono bg-white px-1 border text-gray-800">10-08-2026</span> directly to your Telegram Bot. It will immediately reply back with the hotel stay report for that date!
+                          </p>
+                        </div>
+
+                        <div className="pt-3 border-t border-gray-200">
                           <p className="text-black/60">
                             Once configured, the server exposes a secure Telegram cron endpoint:
                           </p>
@@ -5897,6 +6106,18 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                       <label htmlFor="include_dsda" className="text-sm font-medium text-black/60">Include in Bill</label>
                     </div>
                   </div>
+
+                  {manualBillQRCode && (
+                    <div className="p-4 bg-primary/5 rounded-2xl border border-primary/10 flex items-center gap-4">
+                      <img src={manualBillQRCode} alt="UPI QR Code" className="w-24 h-24 bg-white p-1 rounded-xl shadow-sm border border-primary/10" referrerPolicy="no-referrer" />
+                      <div className="space-y-1">
+                        <div className="text-[10px] font-bold uppercase tracking-widest text-primary">Live Payment Gateway</div>
+                        <div className="text-lg font-bold text-black">Rs. {Math.round(manualBillData.rooms.reduce((acc, curr) => acc + ((curr.room_price || 0) * calculateNights(manualBillData.check_in, manualBillData.check_out)), 0) + (manualBillData.include_dsda ? (manualBillData.dsda_charge || 0) : 0))}</div>
+                        <div className="text-xs font-semibold text-black/60">UPI ID: 9836264725@okbizaxis</div>
+                        <div className="text-[10px] text-black/40">Guests can scan this QR code to pay instantly</div>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="flex gap-4 pt-4">
                     <button 

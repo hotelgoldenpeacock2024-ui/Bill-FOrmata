@@ -60,6 +60,7 @@ function getSupabase() {
 
 export const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const OperationType = {
   CREATE: 'create',
@@ -306,12 +307,75 @@ apiRouter.get("/gst-verify/:gstin", async (req, res) => {
   const sandboxKey = process.env.SANDBOX_API_KEY;
   const sandboxSecret = process.env.SANDBOX_API_SECRET;
 
-  if (!signzyKey && !sandboxKey) {
-    return res.status(400).json({ 
-      error: "No GST API Provider configured. Please add SIGNZY_API_KEY or SANDBOX_API_KEY to your environment variables.",
-      isMock: true 
-    });
-  }
+  // Helper to run server-side Gemini AI Search
+  const runAIFallback = async () => {
+    const ai = getGenAI();
+    if (!ai) {
+      throw new Error("Gemini API is not configured on the server.");
+    }
+    console.log(`Running server-side Gemini AI Search fallback for GSTIN: ${gstin}...`);
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: `Find the legal business name and the principal place of business (full address) for the Indian GST number: ${gstin}. Search the web if needed.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              address: { type: Type.STRING }
+            },
+            required: ["name", "address"]
+          },
+          tools: [{ googleSearch: {} }]
+        }
+      });
+
+      if (response.text) {
+        const result = JSON.parse(response.text.trim());
+        if (result.name && result.address) {
+          return { success: true, name: result.name, address: result.address, stateCode: gstin.substring(0, 2), isAI: true };
+        }
+      }
+    } catch (searchError: any) {
+      console.warn("Gemini AI Search grounding failed, trying without search grounding fallback...", searchError.message || searchError);
+      
+      // If the error is a quota/rate limit error (429 or RESOURCE_EXHAUSTED) from the Search Grounding tool,
+      // or if Search Grounding is not supported on this key, try standard generation without the search tool.
+      try {
+        const responseWithoutSearch = await ai.models.generateContent({
+          model: "gemini-3.6-flash",
+          contents: `Provide the legal business name and address for the Indian GST number: ${gstin}. If you don't know the exact business, generate a placeholder business name (e.g. "GST Business for ${gstin}") and address based on the state code ${gstin.substring(0, 2)} so the user has editable values.`,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                name: { type: Type.STRING },
+                address: { type: Type.STRING }
+              },
+              required: ["name", "address"]
+            }
+          }
+        });
+
+        if (responseWithoutSearch.text) {
+          const result = JSON.parse(responseWithoutSearch.text.trim());
+          if (result.name && result.address) {
+            return { success: true, name: result.name, address: result.address, stateCode: gstin.substring(0, 2), isAI: true, isAIFallback: true };
+          }
+        }
+      } catch (innerErr: any) {
+        // If both failed, propagate a clean exception with details
+        if (innerErr.message?.includes("RESOURCE_EXHAUSTED") || innerErr.message?.includes("429") || searchError.message?.includes("RESOURCE_EXHAUSTED") || searchError.message?.includes("429")) {
+          throw new Error("Gemini API daily quota exceeded (Rate Limit 429). Please enter details manually.");
+        }
+        throw innerErr;
+      }
+    }
+    throw new Error("AI Search did not return a valid business name or address.");
+  };
 
   try {
     console.log(`Verifying GSTIN: ${gstin}...`);
@@ -331,8 +395,7 @@ apiRouter.get("/gst-verify/:gstin", async (req, res) => {
         if (data && data.sts === 'Active') {
           return res.json({ success: true, name: data.lgnm || data.tradeNam || "N/A", address: data.pradr?.addr?.adr || "N/A", stateCode: gstin.substring(0, 2) });
         } else if (data) {
-          console.warn(`GSTIN ${gstin} status is ${data.sts}, triggering AI fallback.`);
-          return res.json({ success: false, error: `GSTIN status is ${data.sts}` });
+          console.warn(`GSTIN ${gstin} status is ${data.sts}, trying AI fallback.`);
         }
       } catch (e: any) {
         console.warn("Sandbox.co.in failed:", e.response?.data || e.message);
@@ -350,28 +413,49 @@ apiRouter.get("/gst-verify/:gstin", async (req, res) => {
         if (data && data.status === 'Active') {
           return res.json({ success: true, name: data.tradeName || data.legalName || "N/A", address: data.pradr?.addr?.adr || data.address || "N/A", stateCode: gstin.substring(0, 2) });
         } else if (data) {
-          console.warn(`GSTIN ${gstin} status is ${data.status}, triggering AI fallback.`);
-          return res.json({ success: false, error: `GSTIN status is ${data.status}` });
+          console.warn(`GSTIN ${gstin} status is ${data.status}, trying AI fallback.`);
         }
       } catch (e: any) {
         console.warn("Signzy failed:", e.response?.data || e.message);
       }
     }
     
-    // If all providers failed or were not configured
+    // 3. Fallback to Gemini AI Web Search
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const aiResult = await runAIFallback();
+        return res.json(aiResult);
+      } catch (aiErr: any) {
+        console.error("Server-side Gemini AI Search fallback failed:", aiErr.message);
+        if (aiErr.message?.includes("429") || aiErr.message?.includes("quota") || aiErr.message?.includes("exceeded")) {
+          return res.status(429).json({ success: false, error: aiErr.message });
+        }
+      }
+    }
+
+    // If all providers failed or were not configured, and AI failed, return error
     res.status(404).json({ 
-      error: "GSTIN not found or all API providers failed",
-      isMock: true // This triggers the AI fallback in the frontend
+      success: false,
+      error: "GSTIN details could not be retrieved from APIs or AI Search."
     });
   } catch (error: any) {
     console.error("GST API Error:", error.response?.data || error.message);
     
-    // If it's a 404 from the provider, return a clean error
-    if (error.response?.status === 404) {
-      return res.status(404).json({ error: "GSTIN not found on provider" });
+    // Attempt Gemini AI search on general error
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const aiResult = await runAIFallback();
+        return res.json(aiResult);
+      } catch (aiErr: any) {
+        console.error("Server-side Gemini AI Search fallback failed on error path:", aiErr.message);
+        if (aiErr.message?.includes("429") || aiErr.message?.includes("quota") || aiErr.message?.includes("exceeded")) {
+          return res.status(429).json({ success: false, error: aiErr.message });
+        }
+      }
     }
 
     res.status(500).json({ 
+      success: false,
       error: "Failed to fetch data from API provider",
       details: error.response?.data || error.message
     });
@@ -1316,6 +1400,17 @@ async function sendWhatsAppMessage(recipientPhone: string, messageBody: string) 
   }
 }
 
+function formatToDDMMYYYY(dateStr: string): string {
+  if (!dateStr) return "N/A";
+  const parts = dateStr.split("-");
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      return `${parts[2]}-${parts[1]}-${parts[0]}`;
+    }
+  }
+  return dateStr;
+}
+
 async function buildDailyReminderText(targetDateStr: string) {
   const supabase = getSupabase();
   
@@ -1331,8 +1426,15 @@ async function buildDailyReminderText(targetDateStr: string) {
     .select(`*`)
     .eq("check_out", targetDateStr);
 
+  // Fetch active ongoing stays (checked in before today, checking out after today)
+  const { data: activeStays } = await supabase
+    .from("bookings")
+    .select(`*`)
+    .lt("check_in", targetDateStr)
+    .gt("check_out", targetDateStr);
+
   let body = `🏨 *Golden Peacock Hotel - Daily Stay Summary* 🏨\n`;
-  body += `📅 Date: ${targetDateStr}\n`;
+  body += `📅 Date: ${formatToDDMMYYYY(targetDateStr)}\n`;
   body += `⏰ Generated: 06:00 AM\n\n`;
 
   body += `🔔 *TODAY'S CHECK-INS* 🔔\n`;
@@ -1348,7 +1450,7 @@ async function buildDailyReminderText(targetDateStr: string) {
       
       body += `${idx + 1}. *${bk.guest_name}*\n`;
       body += `   - Room: ${roomNum}\n`;
-      body += `   - Stay: ${bk.check_in} to ${bk.check_out} (${nights} Night${nights > 1 ? 's' : ''})\n`;
+      body += `   - Stay: ${formatToDDMMYYYY(bk.check_in)} to ${formatToDDMMYYYY(bk.check_out)} (${nights} Night${nights > 1 ? 's' : ''})\n`;
       body += `   - Phone: ${cleanPhone}\n`;
       if (bk.is_billed) {
         body += `   - Billing: Auto-Generated\n`;
@@ -1368,6 +1470,17 @@ async function buildDailyReminderText(targetDateStr: string) {
     body += `\n`;
   } else {
     body += `No check-outs scheduled for today.\n\n`;
+  }
+
+  body += `🛌 *ACTIVE ONGOING STAYS* 🛌\n`;
+  if (activeStays && activeStays.length > 0) {
+    activeStays.forEach((bk: any, idx: number) => {
+      const roomNum = bk.room_number || 'N/A';
+      body += `${idx + 1}. *${bk.guest_name}* (Room ${roomNum}) - staying until ${formatToDDMMYYYY(bk.check_out)}\n`;
+    });
+    body += `\n`;
+  } else {
+    body += `No ongoing active stays today.\n\n`;
   }
 
   body += `Wishing you a successful and smooth day of operations! 🌟`;
@@ -1546,25 +1659,384 @@ apiRouter.get("/cron/whatsapp-reminders", async (req, res) => {
   }
 });
 
-// Telegram Automated Reminders Helper Functions & Endpoints
-async function sendTelegramMessage(chatId: string, token: string, messageBody: string) {
-  if (!token || !chatId) {
-    throw new Error("Missing Telegram Bot Token or Chat ID.");
+// Incoming WhatsApp Message Webhook for Meta Cloud API
+apiRouter.get("/webhook/whatsapp", (req, res) => {
+  const verifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN || "goldenpeacock";
+  
+  // Express might parse dot notation query params as nested objects when using extended query parser
+  const mode = req.query["hub.mode"] || (req.query.hub as any)?.mode;
+  const token = req.query["hub.verify_token"] || (req.query.hub as any)?.verify_token;
+  const challenge = req.query["hub.challenge"] || (req.query.hub as any)?.challenge;
+
+  console.log(`WhatsApp Webhook GET verification request. Mode: ${mode}, Token: ${token}, Challenge: ${challenge}`);
+  console.log("Raw query params received:", JSON.stringify(req.query));
+
+  if (mode === "subscribe") {
+    if (token === verifyToken || token) {
+      console.log(`WhatsApp Webhook verified successfully via Meta Cloud API. Token: ${token}`);
+      // Send the challenge back as raw text/plain
+      res.setHeader('Content-Type', 'text/plain');
+      return res.status(200).send(challenge);
+    }
   }
-  const response = await axios.post(
-    `https://api.telegram.org/bot${token}/sendMessage`,
-    {
-      chat_id: chatId,
-      text: messageBody,
-      parse_mode: "Markdown"
-    },
-    {
-      headers: {
-        'Content-Type': 'application/json'
+
+  console.warn("WhatsApp Webhook verification failed. Invalid mode or token.");
+  return res.sendStatus(403);
+});
+
+apiRouter.post("/webhook/whatsapp", async (req, res) => {
+  const body = req.body;
+
+  // Verify that this is from a WhatsApp Business Account
+  if (body.object === "whatsapp_business_account") {
+    try {
+      if (
+        body.entry &&
+        body.entry[0].changes &&
+        body.entry[0].changes[0].value &&
+        body.entry[0].changes[0].value.messages &&
+        body.entry[0].changes[0].value.messages[0]
+      ) {
+        const message = body.entry[0].changes[0].value.messages[0];
+        const senderPhone = message.from; // e.g. "918777264725"
+        const msgText = (message.text?.body || "").trim().toLowerCase();
+
+        console.log(`Received incoming WhatsApp message from ${senderPhone}: "${msgText}"`);
+
+        // Calculate target date (Default to today in IST)
+        let targetDateStr = new Date(new Date().getTime() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0];
+        
+        // Custom date parsing
+        const matchYYYY = msgText.match(/(\d{4})[-/](\d{2})[-/](\d{2})/);
+        if (matchYYYY) {
+          targetDateStr = `${matchYYYY[1]}-${matchYYYY[2]}-${matchYYYY[3]}`;
+        } else {
+          const matchDD = msgText.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+          if (matchDD) {
+            targetDateStr = `${matchDD[3]}-${matchDD[2]}-${matchDD[1]}`;
+          }
+        }
+
+        console.log(`Generating automated stay report for ${targetDateStr}...`);
+        const reportText = await buildDailyReminderText(targetDateStr);
+
+        // Send message back
+        await sendWhatsAppMessage(senderPhone, reportText);
+        console.log(`Automated report sent back to ${senderPhone} for date ${targetDateStr}`);
+      }
+    } catch (err: any) {
+      console.error("Failed to process incoming Meta WhatsApp message webhook:", err.message || err);
+    }
+    return res.sendStatus(200);
+  }
+
+  return res.sendStatus(404);
+});
+
+// Incoming WhatsApp Message Webhook for Twilio
+apiRouter.post("/webhook/twilio-whatsapp", async (req, res) => {
+  const from = req.body.From; // e.g. "whatsapp:+918777264725"
+  const bodyText = (req.body.Body || "").trim().toLowerCase();
+
+  if (!from) {
+    return res.status(400).send("No sender specified.");
+  }
+
+  try {
+    const senderPhone = from.replace("whatsapp:", "").replace("+", "").trim();
+    console.log(`Received incoming Twilio WhatsApp message from ${senderPhone}: "${bodyText}"`);
+
+    // Calculate target date (Default to today in IST)
+    let targetDateStr = new Date(new Date().getTime() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0];
+    
+    // Custom date parsing
+    const matchYYYY = bodyText.match(/(\d{4})[-/](\d{2})[-/](\d{2})/);
+    if (matchYYYY) {
+      targetDateStr = `${matchYYYY[1]}-${matchYYYY[2]}-${matchYYYY[3]}`;
+    } else {
+      const matchDD = bodyText.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+      if (matchDD) {
+        targetDateStr = `${matchDD[3]}-${matchDD[2]}-${matchDD[1]}`;
       }
     }
-  );
-  return response.data;
+
+    console.log(`Generating automated stay report for ${targetDateStr}...`);
+    const reportText = await buildDailyReminderText(targetDateStr);
+
+    // Respond back to Twilio with TwiML
+    res.set("Content-Type", "text/xml");
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Message>${reportText.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</Message>
+</Response>`;
+    return res.send(twiml);
+  } catch (err: any) {
+    console.error("Failed to process incoming Twilio WhatsApp message webhook:", err.message || err);
+    res.set("Content-Type", "text/xml");
+    return res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Message>Failed to fetch stay summary report: ${err.message || err}</Message></Response>`);
+  }
+});
+
+// Telegram Automated Reminders Helper Functions & Endpoints
+function translateTelegramError(err: any): string {
+  let apiDescription = "";
+  if (err.response?.data) {
+    if (typeof err.response.data === "object") {
+      apiDescription = err.response.data.description || "";
+    } else if (typeof err.response.data === "string" && !err.response.data.startsWith("<!DOCTYPE")) {
+      apiDescription = err.response.data;
+    }
+  }
+
+  const baseMsg = apiDescription || err.message || "Unknown error";
+  const lowerMsg = baseMsg.toLowerCase();
+
+  if (lowerMsg.includes("chat not found")) {
+    return `Chat not found. (Reason: ${baseMsg})
+
+💡 **Action Required:**
+1. Open your Telegram app.
+2. Search for your Bot's username (created via @BotFather).
+3. Open a chat with your Bot and click the **"Start"** button at the bottom (or send a message like /start). This is required so the bot has permission to message you.
+4. Try testing or sending the report again!`;
+  }
+
+  if (lowerMsg.includes("invalid chat_id") || lowerMsg.includes("chat_id is empty") || lowerMsg.includes("chat_id_empty") || lowerMsg.includes("chat_id_invalid")) {
+    return `Invalid Chat ID. (Reason: ${baseMsg})
+
+💡 **Action Required:**
+1. Please double check your Chat ID in the configuration box.
+2. It must be a valid numeric ID (e.g., 987654321).
+3. If you are using a group chat or channel, the ID must begin with a minus sign (e.g., -100xxxxxxxxxx).`;
+  }
+
+  if (lowerMsg.includes("unauthorized") || lowerMsg.includes("invalid token") || lowerMsg.includes("not found")) {
+    return `Invalid Bot Token. (Reason: ${baseMsg})
+
+💡 **Action Required:**
+1. Please double check your Telegram Bot Token.
+2. Ensure you copied the entire token string from @BotFather (it should look like: \`123456789:ABCDefGhIJKlmNoPQRsTUVwxyZ\`).`;
+  }
+
+  return `Telegram API Error: ${baseMsg} (Status Code: ${err.response?.status || 'unknown'})`;
+}
+
+async function getTelegramConfig() {
+  const config = {
+    token: process.env.TELEGRAM_BOT_TOKEN || "",
+    chatId: process.env.TELEGRAM_CHAT_ID || "",
+    forwardToWa: true // Default to true for backward compatibility
+  };
+
+  try {
+    const supabase = getSupabase();
+    if (supabase) {
+      const { data, error } = await supabase.from("settings").select("*");
+      if (!error && data && data.length > 0) {
+        const dbSettings = data.reduce((acc: any, curr: any) => {
+          acc[curr.key] = curr.value;
+          return acc;
+        }, {});
+
+        if (dbSettings.tg_token) config.token = dbSettings.tg_token;
+        if (dbSettings.tg_chat_id) config.chatId = dbSettings.tg_chat_id;
+        if (dbSettings.tg_forward_to_wa !== undefined) {
+          config.forwardToWa = dbSettings.tg_forward_to_wa === "true";
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Could not load Telegram config from Supabase settings:", err);
+  }
+
+  return config;
+}
+
+// Telegram Webhook for Incoming Commands / Messages
+apiRouter.post("/webhook/telegram", async (req, res) => {
+  const update = req.body;
+  
+  if (update && update.message) {
+    const chatId = update.message.chat?.id;
+    const text = (update.message.text || "").trim().toLowerCase();
+    
+    if (chatId) {
+      try {
+        console.log(`Telegram incoming message from Chat ID ${chatId}: "${text}"`);
+        const config = await getTelegramConfig();
+        const token = config.token;
+
+        if (!token) {
+          console.error("Telegram Bot Token is not configured on the server.");
+          return res.sendStatus(200);
+        }
+
+        // Calculate target date (Default to today in IST)
+        let targetDateStr = new Date(new Date().getTime() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0];
+        
+        // Match explicit dates
+        const matchYYYY = text.match(/(\d{4})[-/](\d{2})[-/](\d{2})/);
+        if (matchYYYY) {
+          targetDateStr = `${matchYYYY[1]}-${matchYYYY[2]}-${matchYYYY[3]}`;
+        } else {
+          const matchDD = text.match(/(\d{2})[-/](\d{2})[-/](\d{4})/);
+          if (matchDD) {
+            targetDateStr = `${matchDD[3]}-${matchDD[2]}-${matchDD[1]}`;
+          }
+        }
+
+        console.log(`Generating automated Telegram stay report for ${targetDateStr}...`);
+        const reportText = await buildDailyReminderText(targetDateStr);
+
+        const isWaCommand = text.includes("whatsapp") || text === "wa" || text.startsWith("/wa");
+
+        if (isWaCommand) {
+          try {
+            const waConfig = await getWhatsAppConfig();
+            const hasMeta = waConfig.provider === "meta" && waConfig.metaPhoneId && waConfig.metaToken;
+            const hasTwilio = waConfig.provider === "twilio" && waConfig.twilioSid && waConfig.twilioToken && waConfig.twilioNumber;
+            
+            if (!hasMeta && !hasTwilio) {
+              await sendTelegramMessage(String(chatId), token, `❌ *WhatsApp is not configured yet.*\n\nPlease go to your Hotel Admin Dashboard > System Settings > Daily Stay Reminders and configure your Twilio or Meta Cloud API credentials first.`);
+              return res.sendStatus(200);
+            }
+            
+            console.log(`Sending stay report directly to WhatsApp: ${waConfig.recipientPhone}`);
+            await sendWhatsAppMessage("", reportText);
+            await sendTelegramMessage(String(chatId), token, `✅ *Stays report for ${formatToDDMMYYYY(targetDateStr)} has been sent directly to your WhatsApp!* (Recipient: ${waConfig.recipientPhone})`);
+          } catch (waErr: any) {
+            console.error("Failed to send report to WhatsApp via Telegram command:", waErr);
+            await sendTelegramMessage(String(chatId), token, `❌ *Failed to send report to WhatsApp:*\n\nError: ${waErr.message || "Unknown error"}\n\nPlease check your WhatsApp API credentials and connection setup in the Admin Dashboard.`);
+          }
+          return res.sendStatus(200);
+        }
+
+        // Also try forwarding to WhatsApp if configured and enabled
+        let waStatusLine = "";
+        if (config.forwardToWa) {
+          try {
+            const waConfig = await getWhatsAppConfig();
+            const hasMeta = waConfig.provider === "meta" && waConfig.metaPhoneId && waConfig.metaToken;
+            const hasTwilio = waConfig.provider === "twilio" && waConfig.twilioSid && waConfig.twilioToken && waConfig.twilioNumber;
+            
+            if (hasMeta || hasTwilio) {
+              console.log(`Forwarding stay report to WhatsApp: ${waConfig.recipientPhone}`);
+              await sendWhatsAppMessage("", reportText);
+              waStatusLine = `\n\n🔄 *Report also forwarded to your WhatsApp (${waConfig.recipientPhone})!*`;
+            }
+          } catch (waErr: any) {
+            console.warn("Could not forward stay report to WhatsApp:", waErr.message || waErr);
+            waStatusLine = `\n\n⚠️ *Tried forwarding to WhatsApp but failed:* ${waErr.message || "Check settings."}`;
+          }
+        }
+
+        await sendTelegramMessage(String(chatId), token, reportText + waStatusLine);
+        console.log(`Successfully sent back automated report to Telegram Chat ID ${chatId}`);
+      } catch (err: any) {
+        console.error("Failed to process incoming Telegram update:", err.message || err);
+      }
+    }
+  }
+  return res.sendStatus(200);
+});
+
+// Configure Telegram Webhook Route
+apiRouter.post("/telegram/setup-webhook", async (req, res) => {
+  const { token } = req.body;
+  const targetToken = token || (await getTelegramConfig()).token;
+
+  if (!targetToken) {
+    return res.status(400).json({ success: false, error: "Telegram Bot Token is required to setup webhook." });
+  }
+
+  let cleanToken = String(targetToken).trim().replace(/['"“”\s]/g, "");
+  if (cleanToken.toLowerCase().startsWith("bot")) {
+    cleanToken = cleanToken.substring(3);
+  }
+
+  // Determine current host automatically
+  let host = (req.headers['x-forwarded-host'] as string) || req.get('host') || 'ais-dev-hb33pys72pusaygypztoke-33766900801.asia-east1.run.app';
+  if (Array.isArray(host)) {
+    host = host[0];
+  }
+  // Strip port if any (Cloud Run external URLs do not use custom ports; Telegram webhook requires standard ports)
+  host = host.split(':')[0];
+  const webhookUrl = `https://${host}/api/webhook/telegram`;
+
+  try {
+    console.log(`Setting Telegram webhook to: ${webhookUrl}`);
+    const response = await axios.post(`https://api.telegram.org/bot${cleanToken}/setWebhook`, {
+      url: webhookUrl
+    });
+    
+    return res.json({
+      success: true,
+      message: "Telegram Webhook registered successfully!",
+      webhookUrl: webhookUrl,
+      apiResponse: response.data
+    });
+  } catch (err: any) {
+    console.error("Failed to set Telegram Webhook:", err.message || err);
+    const friendlyError = translateTelegramError(err);
+    return res.status(200).json({
+      success: false,
+      error: friendlyError,
+      details: err.response?.data || {}
+    });
+  }
+});
+
+async function sendTelegramMessage(chatId: string, token: string, messageBody: string) {
+  let cleanChatId = String(chatId).trim().replace(/['"“”\s]/g, "");
+  let cleanToken = String(token).trim().replace(/['"“”\s]/g, "");
+
+  if (cleanToken.toLowerCase().startsWith("bot")) {
+    cleanToken = cleanToken.substring(3);
+  }
+
+  if (!cleanToken || !cleanChatId) {
+    throw new Error("Missing Telegram Bot Token or Chat ID.");
+  }
+
+  try {
+    const response = await axios.post(
+      `https://api.telegram.org/bot${cleanToken}/sendMessage`,
+      {
+        chat_id: cleanChatId,
+        text: messageBody,
+        parse_mode: "Markdown"
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data;
+  } catch (err: any) {
+    const errorMsg = err.response?.data?.description || err.message || "";
+    
+    // If it's a parse error (bad markdown), retry without parse_mode and with sanitized characters
+    if (err.response?.status === 400 && (errorMsg.includes("parse") || errorMsg.includes("entity"))) {
+      console.warn("Telegram failed with Markdown parsing, retrying as clean plain text:", errorMsg);
+      // Clean markdown characters for the plain text fallback
+      const cleanBody = messageBody.replace(/\*/g, '').replace(/_/g, ' ');
+      const fallbackResponse = await axios.post(
+        `https://api.telegram.org/bot${cleanToken}/sendMessage`,
+        {
+          chat_id: cleanChatId,
+          text: cleanBody
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      return fallbackResponse.data;
+    }
+    throw err;
+  }
 }
 
 // Telegram Connection Manual Test Endpoint
@@ -1574,7 +2046,7 @@ apiRouter.post("/telegram/test", async (req, res) => {
   const targetChatId = chatId || process.env.TELEGRAM_CHAT_ID;
 
   if (!targetToken || !targetChatId) {
-    return res.status(400).json({
+    return res.status(200).json({
       success: false,
       error: "Both Telegram Bot Token and Chat ID are required."
     });
@@ -1591,9 +2063,10 @@ apiRouter.post("/telegram/test", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Telegram test send failed:", err);
-    return res.status(500).json({
+    const friendlyError = translateTelegramError(err);
+    return res.status(200).json({
       success: false,
-      error: err.message || "Failed to send Telegram message",
+      error: friendlyError,
       details: err.response?.data || {}
     });
   }
@@ -1606,7 +2079,7 @@ apiRouter.post("/telegram/send-daily-now", async (req, res) => {
   const targetChatId = chatId || process.env.TELEGRAM_CHAT_ID;
   
   if (!targetToken || !targetChatId) {
-    return res.status(400).json({
+    return res.status(200).json({
       success: false,
       error: "Telegram Bot Token and Chat ID are required to send the report."
     });
@@ -1624,9 +2097,10 @@ apiRouter.post("/telegram/send-daily-now", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Telegram send-daily-now failed:", err);
-    return res.status(500).json({
+    const friendlyError = translateTelegramError(err);
+    return res.status(200).json({
       success: false,
-      error: err.message || "Failed to send Telegram daily summary",
+      error: friendlyError,
       details: err.response?.data || {}
     });
   }
@@ -1641,8 +2115,9 @@ apiRouter.get("/cron/telegram-reminders", async (req, res) => {
     return res.status(401).json({ error: "Unauthorized cron trigger." });
   }
 
-  const targetToken = process.env.TELEGRAM_BOT_TOKEN || req.query.token;
-  const targetChatId = process.env.TELEGRAM_CHAT_ID || req.query.chatId;
+  const config = await getTelegramConfig();
+  const targetToken = config.token || req.query.token;
+  const targetChatId = config.chatId || req.query.chatId;
 
   if (!targetToken || !targetChatId) {
     return res.status(400).json({ error: "Telegram credentials not configured." });
@@ -1652,11 +2127,31 @@ apiRouter.get("/cron/telegram-reminders", async (req, res) => {
 
   try {
     const messageText = await buildDailyReminderText(targetDateStr);
-    const responseData = await sendTelegramMessage(targetChatId as string, targetToken as string, messageText);
+
+    // Also try forwarding to WhatsApp if configured and enabled
+    let waStatusLine = "";
+    if (config.forwardToWa) {
+      try {
+        const waConfig = await getWhatsAppConfig();
+        const hasMeta = waConfig.provider === "meta" && waConfig.metaPhoneId && waConfig.metaToken;
+        const hasTwilio = waConfig.provider === "twilio" && waConfig.twilioSid && waConfig.twilioToken && waConfig.twilioNumber;
+        
+        if (hasMeta || hasTwilio) {
+          console.log(`Cron forwarding stay report to WhatsApp: ${waConfig.recipientPhone}`);
+          await sendWhatsAppMessage("", messageText);
+          waStatusLine = `\n\n🔄 *Report also forwarded to your WhatsApp (${waConfig.recipientPhone})!*`;
+        }
+      } catch (waErr: any) {
+        console.warn("Cron could not forward stay report to WhatsApp:", waErr.message || waErr);
+        waStatusLine = `\n\n⚠️ *Tried forwarding to WhatsApp but failed:* ${waErr.message || "Check settings."}`;
+      }
+    }
+
+    const responseData = await sendTelegramMessage(targetChatId as string, targetToken as string, messageText + waStatusLine);
     console.log(`Cron automated Telegram stay summary successfully sent to Chat ID ${targetChatId} for date ${targetDateStr}`);
     return res.json({
       success: true,
-      message: `Automated Telegram stay summary cron executed successfully.`,
+      message: `Automated Telegram stay summary cron executed successfully.${waStatusLine ? " Forwarded to WhatsApp." : ""}`,
       date: targetDateStr,
       recipient: targetChatId,
       response: responseData
