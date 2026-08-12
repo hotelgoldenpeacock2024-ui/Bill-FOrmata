@@ -41,7 +41,12 @@ import {
   ArrowUpRight,
   Activity,
   Save,
-  HelpCircle
+  HelpCircle,
+  Mic,
+  Cloud,
+  FolderOpen,
+  Archive,
+  FolderArchive
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
@@ -49,6 +54,7 @@ import autoTable from 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 import * as XLSX from 'xlsx';
 import QRCode from 'qrcode';
+import JSZip from 'jszip';
 
 const getBase64ImageFromURL = (url: string): Promise<string> => {
   return new Promise((resolve, reject) => {
@@ -551,6 +557,116 @@ export default function App() {
       setAiLoading(false);
     }
   };
+
+  const [isZipping, setIsZipping] = useState<boolean>(false);
+  const [zipProgress, setZipProgress] = useState<string>('');
+
+  const getBillPdfBlob = async (bill: Bill) => {
+    const rooms = JSON.parse(bill.rooms_data || '[]');
+    const fakeBooking: any = {
+      booking_id: bill.booking_id || bill.invoice_id,
+      invoice_id: bill.invoice_id,
+      guest_name: bill.guest_name,
+      guest_phone: bill.guest_phone,
+      guest_email: bill.guest_email,
+      guest_address: bill.guest_address,
+      guest_gst: bill.guest_gst,
+      check_in: bill.check_in,
+      check_out: bill.check_out,
+      dsda_charge: bill.dsda_charge,
+      room_price: rooms[0]?.room_price || 0,
+      room_number: rooms[0]?.room_number || '',
+      room_type: rooms[0]?.room_type || '',
+      company_name: rooms[0]?.company_name || bill.company_name || '',
+      company_address: rooms[0]?.company_address || bill.company_address || '',
+      advance_payment: 0
+    };
+
+    const fakeGroupBookings: any[] = rooms.map((r: any, idx: number) => ({
+      ...fakeBooking,
+      id: Date.now() + idx,
+      room_number: r.room_number,
+      room_type: r.room_type,
+      room_price: r.room_price,
+      company_name: r.company_name || '',
+      company_address: r.company_address || ''
+    }));
+
+    let doc: any;
+    if (bill.bill_type === 'GST') {
+      doc = await generateGSTBillPDF(fakeBooking, true, fakeGroupBookings, true, true, bill.created_at);
+    } else {
+      doc = await downloadReceiptForBooking(fakeBooking, true, fakeGroupBookings, true, true, bill.created_at);
+    }
+
+    const pdfBlob = doc ? (doc.output('blob') as Blob) : null;
+    const cleanGuestName = (bill.guest_name || 'Guest').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const fileName = bill.invoice_id ? `${bill.invoice_id}_${cleanGuestName}.pdf` : `${cleanGuestName}_Bill_${bill.id}.pdf`;
+    return { fileName, pdfBlob };
+  };
+
+  const downloadBillsAsZip = async (billsToExport: Bill[], zipTitleName: string) => {
+    if (billsToExport.length === 0) {
+      alert("No bills found to download.");
+      return;
+    }
+    setIsZipping(true);
+    try {
+      const zip = new JSZip();
+      const folder = zip.folder(zipTitleName) || zip;
+
+      for (let i = 0; i < billsToExport.length; i++) {
+        const bill = billsToExport[i];
+        setZipProgress(`Generating PDF ${i + 1} of ${billsToExport.length}...`);
+        const { fileName, pdfBlob } = await getBillPdfBlob(bill);
+        if (pdfBlob) {
+          folder.file(fileName, pdfBlob);
+        }
+      }
+
+      setZipProgress("Compressing into ZIP archive...");
+      const content = await zip.generateAsync({ type: 'blob' });
+
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(content);
+      link.download = `${zipTitleName}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(link.href);
+    } catch (error: any) {
+      console.error("Error creating ZIP:", error);
+      alert(`Failed to create ZIP: ${error.message || error}`);
+    } finally {
+      setIsZipping(false);
+      setZipProgress('');
+    }
+  };
+
+  const [isListening, setIsListening] = useState<boolean>(false);
+
+  const handleVoiceInput = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-IN';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onresult = (event: any) => {
+      const speechResult = event.results[0][0].transcript;
+      setAiInputText(prev => (prev ? prev + ' ' + speechResult : speechResult));
+      setIsListening(false);
+    };
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => setIsListening(false);
+    recognition.start();
+  };
+
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [allBills, setAllBills] = useState<Bill[]>([]);
   const [guests, setGuests] = useState<{ guest_name: string; booking_count: number; last_stay: string; guest_phone: string; guest_email: string }[]>([]);
@@ -1598,6 +1714,7 @@ export default function App() {
     doc.text('Default Check-out time is 09:30 AM.', 105, 287, { align: 'center' });
 
     doc.save(`Receipt-${lastBookingDetails.bookingId}.pdf`);
+    return doc;
   };
 
   const downloadBookingConfirmationForBooking = async (booking: Booking, customGroupBookings?: Booking[]) => {
@@ -2078,6 +2195,7 @@ export default function App() {
     if (!skipDownload) {
       doc.save(`Receipt-${booking.booking_id}.pdf`);
     }
+    return doc;
   };
 
   const generateMonthlyReportPDF = (monthStr: string) => {
@@ -2708,6 +2826,7 @@ export default function App() {
     if (!skipDownload) {
       doc.save(`${booking.guest_name}_GST_Bill_${booking.booking_id}.pdf`);
     }
+    return doc;
   };
 
   const generateAdvanceReceiptPDF = async () => {
@@ -4449,6 +4568,26 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </button>
 
                     <button 
+                      onClick={() => downloadBillsAsZip(filteredBills, `Bills_${selectedBillMonth}`)}
+                      disabled={isZipping}
+                      className="h-12 px-6 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 transition-all flex items-center gap-2 shadow-lg shadow-amber-500/20 disabled:opacity-50"
+                      title="Download selected month bills in a ZIP folder"
+                    >
+                      <Archive size={18} />
+                      {isZipping ? 'Zipping...' : 'Download Month Bills (ZIP)'}
+                    </button>
+
+                    <button 
+                      onClick={() => downloadBillsAsZip(allBills, 'Hotel_Bills_All_History')}
+                      disabled={isZipping}
+                      className="h-12 px-6 bg-amber-700 text-white rounded-xl font-bold hover:bg-amber-800 transition-all flex items-center gap-2 shadow-lg shadow-amber-700/20 disabled:opacity-50"
+                      title="Download all bills history in a ZIP folder"
+                    >
+                      <FolderArchive size={18} />
+                      {isZipping ? 'Zipping...' : 'Download All Bills (ZIP)'}
+                    </button>
+
+                    <button 
                       onClick={() => generateMonthlyExcelReport(selectedBillMonth)}
                       className="h-12 px-6 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 transition-all flex items-center gap-2 shadow-lg shadow-emerald-600/20"
                     >
@@ -4493,6 +4632,18 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </div>
                   </div>
                 </div>
+
+                {isZipping && (
+                  <div className="bg-amber-50 border border-amber-200 text-amber-900 px-6 py-4 rounded-2xl flex items-center justify-between shadow-sm animate-pulse">
+                    <div className="flex items-center gap-3">
+                      <RefreshCw size={20} className="animate-spin text-amber-600" />
+                      <div>
+                        <p className="font-bold text-sm">Packaging Bills into ZIP Archive...</p>
+                        <p className="text-xs text-amber-700">{zipProgress || 'Preparing PDFs...'}</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Summary Totals */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -4767,6 +4918,8 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     </button>
                   </form>
                 </div>
+
+
 
                 <div className="bg-white rounded-3xl p-8 shadow-sm border border-black/5">
                   <h3 className="text-xl font-semibold mb-6 flex items-center gap-2">
@@ -5828,6 +5981,15 @@ Thank you for choosing ${hotelSettings.hotel_name}!
                     placeholder="Type stay details e.g., 'Book Room 101 for Sankha Suvra Pal from 2026-08-10 to 2026-08-12 at 2000/night'"
                     className="flex-1 h-12 px-4 bg-gray-50 rounded-2xl border border-gray-200 focus:bg-white focus:border-primary outline-none text-sm transition-all placeholder:text-gray-400"
                   />
+                  <button
+                    type="button"
+                    onClick={handleVoiceInput}
+                    disabled={aiLoading}
+                    className={`h-12 w-12 rounded-2xl border transition-all flex items-center justify-center flex-shrink-0 ${isListening ? 'bg-red-500 text-white animate-pulse border-red-600' : 'bg-gray-50 text-gray-600 hover:bg-gray-100 border-gray-200'}`}
+                    title={isListening ? "Listening... Speak now" : "Voice Input (Speak your stay details)"}
+                  >
+                    <Mic size={18} />
+                  </button>
                   <button
                     type="submit"
                     disabled={aiLoading || !aiInputText.trim()}
